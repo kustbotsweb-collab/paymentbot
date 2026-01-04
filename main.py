@@ -63,12 +63,12 @@ PLANS_FARMER = {
 
 # Claimer Plans (Base + 0.2 USDT)
 PLANS_CLAIMER = {
-    "6h":  {"label": "6 Hours",   "amount": 0.1,  "hours": 6},
+    "6h":  {"label": "6 Hours",   "amount": 1.0,  "hours": 6},
     "12h": {"label": "12 Hours",  "amount": 1.5,  "hours": 12},
     "1d":  {"label": "1 Day",     "amount": 2.5,  "hours": 24},
     "2d":  {"label": "2 Days",    "amount": 4.5,  "hours": 48},
     "4d":  {"label": "4 Days",    "amount": 8.0,  "hours": 96},
-    "7d":  {"label": "7 Days",    "amount": 13.5, "hours": 168},
+    "7d":  {"label": "7 Days",    "amount": 12.5, "hours": 168},
 }
 
 PAYMENT_TIMEOUT = 15 * 60
