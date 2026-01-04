@@ -17,15 +17,15 @@ UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
 UPI_DM_LINK = "https://t.me/KustXoffical"
 
 # --- Chat Farmer Assets ---
-FARMER_FORWARD_1 = ("kustvault", 3)
-FARMER_FORWARD_2 = ("kustvault", 2)
+FARMER_FORWARD_1 = ("kustvault", 2)
+FARMER_FORWARD_2 = ("kustvault", 3)
 FARMER_FORWARD_3 = ("kustvault", 4)
 FARMER_API_URL = "https://chat-auth11-bad82326a8c1.herokuapp.com"
 
 # --- Code Claimer Assets ---
-CLAIMER_FORWARD_1 = ("kustvault", 7)
+CLAIMER_FORWARD_1 = ("kustvault", 5)
 CLAIMER_FORWARD_2 = ("kustvault", 6)
-CLAIMER_FORWARD_3 = ("kustvault", 5)
+CLAIMER_FORWARD_3 = ("kustvault", 7)
 CLAIMER_API_URL = "https://code-auth-0cd38a139230.herokuapp.com"
 
 # Start image
