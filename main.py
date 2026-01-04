@@ -53,8 +53,8 @@ RENAME_USER_ENDPOINT = f"{FARMER_API_URL}/rename_user"
 
 # Farmer Plans
 PLANS_FARMER = {
-    "6h":  {"label": "6 Hours",   "amount": 0.8,  "hours": 6},
-    "12h": {"label": "12 Hours",  "amount": 1.3,  "hours": 12},
+    "6h":  {"label": "6 Hours",   "amount": 1.0,  "hours": 6},
+    "12h": {"label": "12 Hours",  "amount": 1.5,  "hours": 12},
     "1d":  {"label": "1 Day",     "amount": 2.3,  "hours": 24},
     "2d":  {"label": "2 Days",    "amount": 4.3,  "hours": 48},
     "4d":  {"label": "4 Days",    "amount": 7.8,  "hours": 96},
@@ -63,7 +63,7 @@ PLANS_FARMER = {
 
 # Claimer Plans (Base + 0.2 USDT)
 PLANS_CLAIMER = {
-    "6h":  {"label": "6 Hours",   "amount": 1.0,  "hours": 6},
+    "6h":  {"label": "6 Hours",   "amount": 0.1,  "hours": 6},
     "12h": {"label": "12 Hours",  "amount": 1.5,  "hours": 12},
     "1d":  {"label": "1 Day",     "amount": 2.5,  "hours": 24},
     "2d":  {"label": "2 Days",    "amount": 4.5,  "hours": 48},
