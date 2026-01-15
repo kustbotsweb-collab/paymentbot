@@ -23,7 +23,7 @@ CLAIMER_FORWARD_3 = ("kustvault", 7)
 CLAIMER_API_URL = "https://code-auth1-73614131da82.herokuapp.com"
 
 # Start image
-START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/-p_.jpg"
+START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/b28add5ce0a34b4dbe8887511760a1b4"
 
 # MongoDB
 MONGO_URL = "mongodb+srv://kustbotsweb_db_user:z7YqNFmFOvVHKl4B@kust-payments.hiin3lu.mongodb.net/?appName=kust-payments"
