@@ -16,12 +16,6 @@ SUPPORT_CHAT_LINK = "https://t.me/kustbotschat"
 UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
 UPI_DM_LINK = "https://t.me/KustXoffical"
 
-# --- Chat Farmer Assets ---
-FARMER_FORWARD_1 = ("kustvault", 2)
-FARMER_FORWARD_2 = ("kustvault", 3)
-FARMER_FORWARD_3 = ("kustvault", 4)
-FARMER_API_URL = "https://chat-auth11-bad82326a8c1.herokuapp.com"
-
 # --- Code Claimer Assets ---
 CLAIMER_FORWARD_1 = ("kustvault", 5)
 CLAIMER_FORWARD_2 = ("kustvault", 6)
@@ -36,7 +30,6 @@ MONGO_URL = "mongodb+srv://kustbotsweb_db_user:z7YqNFmFOvVHKl4B@kust-payments.hi
 mongo = MongoClient(MONGO_URL)
 db = mongo["kustfarm"]
 users_col = db["users"]
-demos_col = db["demos"]
 
 # Bot owner
 BOT_OWNER_ID = 7618467489
@@ -45,23 +38,14 @@ BOT_OWNER_ID = 7618467489
 OXAPAY_API_KEY = "SNJEE3-MOEI0B-ZR0FW4-UWSLXH"
 OXAPAY_API_BASE = "https://api.oxapay.com"
 
-# Active users checker settings (Checks Farmer API by default)
-ACTIVE_USERS_ENDPOINT = f"{FARMER_API_URL}/active_users"
-RENAME_USER_ENDPOINT = f"{FARMER_API_URL}/rename_user"
+# Active users checker settings (Using Claimer API now)
+ACTIVE_USERS_ENDPOINT = f"{CLAIMER_API_URL}/active_users"
+RENAME_USER_ENDPOINT = f"{CLAIMER_API_URL}/rename_user"
 
 # --- PRICING PLANS ---
 
-# Farmer Plans
-PLANS_FARMER = {
-    "6h":  {"label": "6 Hours",   "amount": 1.0,  "hours": 6},
-    "12h": {"label": "12 Hours",  "amount": 1.5,  "hours": 12},
-    "1d":  {"label": "1 Day",     "amount": 2.3,  "hours": 24},
-    "2d":  {"label": "2 Days",    "amount": 4.3,  "hours": 48},
-    "4d":  {"label": "4 Days",    "amount": 7.8,  "hours": 96},
-    "7d":  {"label": "7 Days",    "amount": 13.3, "hours": 168},
-}
-
 # Claimer Plans (Base + 0.2 USDT)
+# Note: "1d" will be filtered out dynamically on weekends
 PLANS_CLAIMER = {
     "6h":  {"label": "6 Hours",   "amount": 2.5,  "hours": 6},
     "12h": {"label": "12 Hours",  "amount": 2.5,  "hours": 12},
@@ -113,9 +97,9 @@ def query_invoice(track_id: str):
     r.raise_for_status()
     return r.json()
 
-def activate_subscription(username_with_at: str, hours: int, api_base: str):
+def activate_subscription(username_with_at: str, hours: int):
     """
-    Synchronous activation call. Uses the specific API base URL (Farmer or Claimer).
+    Synchronous activation call using CLAIMER_API_URL.
     """
     try:
         params = {
@@ -123,14 +107,13 @@ def activate_subscription(username_with_at: str, hours: int, api_base: str):
             "admin": "admin1234",
             "duration": hours
         }
-        url = f"{api_base}/auth" 
-        # use GET as original code
+        url = f"{CLAIMER_API_URL}/auth" 
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
-        logger.info(f"[ACTIVATE] Activated subscription for {username_with_at} on {api_base} for {hours} hours. Response: {r.text}")
+        logger.info(f"[ACTIVATE] Activated subscription for {username_with_at} for {hours} hours. Response: {r.text}")
         return True
     except Exception as e:
-        logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at} on {api_base}: {e}")
+        logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at}: {e}")
         return False
 
 def extract_status_from_query_response(resp_json):
@@ -160,31 +143,15 @@ def extract_status_from_query_response(resp_json):
                     return str(s).lower()
     return None
 
-async def wait_for_payment(user_id: int, track_id: str, plan_key: str, product_type: str):
+async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: int):
     session = user_sessions.get(user_id)
     if not session:
         logger.warning(f"wait_for_payment: no session for {user_id}")
         return False
 
-    # Determine which plan dict and config to use
-    if product_type == "claimer":
-        plans_dict = PLANS_CLAIMER
-        api_url = CLAIMER_API_URL
-        forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
-        product_name = "Code Claimer"
-    else:
-        plans_dict = PLANS_FARMER
-        api_url = FARMER_API_URL
-        forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
-        product_name = "Chat Farmer"
-
-    plan = plans_dict.get(plan_key)
-    if not plan:
-        logger.warning(f"wait_for_payment: invalid plan {plan_key} for {product_type}")
-        return False
-
-    label = plan["label"]
-    hours = plan["hours"]
+    api_url = CLAIMER_API_URL
+    forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
+    product_name = "Code Claimer"
 
     start = time.time()
     while time.time() - start < PAYMENT_TIMEOUT:
@@ -195,13 +162,13 @@ async def wait_for_payment(user_id: int, track_id: str, plan_key: str, product_t
             status = extract_status_from_query_response(data) or ""
             status = status.lower()
 
-            logger.info(f"Invoice {track_id} ({product_type}) status check: {status}")
+            logger.info(f"Invoice {track_id} status check: {status}")
 
             if status == "paid":
                 username_clean = session.get("username", "UNKNOWN")
 
                 # call activation API in a background thread
-                activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
+                activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours)
 
                 # Persist username to DB if not present
                 try:
@@ -213,7 +180,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_key: str, product_t
                 await bot.send_message(
                     user_id,
                     f"✅ Payment confirmed!\n\n"
-                    f"Your <b>{product_name} - {label}</b> subscription is activated.\n"
+                    f"Your <b>{product_name} - {plan_label}</b> subscription is activated.\n"
                     f"Stake Username: <code>@{username_clean}</code>\n"
                     f"Duration: <b>{hours} hours</b>.",
                     parse_mode="html"
@@ -244,7 +211,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_key: str, product_t
                 return True
 
             if status in ("expired", "cancelled", "cancel", "failed"):
-                await bot.send_message(user_id, f"❌ Invoice for {product_name} ({label}) expired or cancelled.")
+                await bot.send_message(user_id, f"❌ Invoice for {product_name} ({plan_label}) expired or cancelled.")
                 return False
 
         except Exception as e:
@@ -258,8 +225,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_key: str, product_t
 
 def get_active_users():
     """
-    Call GET /active_users on the FARMER API.
-    (Currently only tracking Farmer active users for reminders)
+    Call GET /active_users on the CLAIMER API.
     """
     try:
         r = requests.get(ACTIVE_USERS_ENDPOINT, timeout=20)
@@ -272,7 +238,6 @@ def get_active_users():
 def rename_user_api(old_username: str, new_username: str):
     """
     POST /rename_user with form fields old_username, new_username and admin.
-    Defaulting to Farmer API for rename logic.
     """
     try:
         if old_username and not old_username.startswith("@"):
@@ -312,7 +277,7 @@ def _parse_iso_datetime(s: str):
 
 async def check_active_users_loop():
     await asyncio.sleep(5)
-    logger.info("Active users reminder loop started (Farmer).")
+    logger.info("Active users reminder loop started.")
     while True:
         try:
             data = await asyncio.to_thread(get_active_users)
@@ -346,8 +311,6 @@ async def check_active_users_loop():
                                     continue
 
                                 rec = users_col.find_one({"username": username_clean})
-                                if not rec:
-                                    rec = demos_col.find_one({"username": username_clean})
                                 if not rec:
                                     continue
 
@@ -408,19 +371,15 @@ async def start_handler(event):
 
     caption_text = (
         "<b>🚀 Kust Bots — Premium Tools</b>\n\n"
-        "<b>1️⃣ Chat Farmer:</b> Automated Chat Farming & AI-Driven Replies\n"
-        "<b>2️⃣ Code Claimer:</b> High-speed code claiming system\n\n"
+        "<b>Code Claimer:</b> High-speed code claiming system\n\n"
         "Tap a button below to continue."
     )
 
     buttons = []
     # Purchase buttons
-    buttons.append([Button.inline("🤖 Buy Chat Farmer", b"buy_product_farmer")])
     buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
 
-    if first_time:
-        buttons.append([Button.inline("🎁 Get Free Demo (Farmer)", b"get_demo")])
-    else:
+    if not first_time:
         buttons.append([Button.inline("✏️ Edit username", b"edit_username")])
     
     buttons.append([
@@ -448,10 +407,9 @@ async def help_handler(event):
 
 @bot.on(events.CallbackQuery(data=b"buy_sub"))
 async def buy_sub_menu_handler(event):
-    # If user clicks "Renew" from reminder, show product choice
+    # If user clicks "Renew" from reminder
     await event.answer()
     buttons = [
-        [Button.inline("🤖 Buy Chat Farmer", b"buy_product_farmer")],
         [Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")],
     ]
     await event.edit("<b>Select Product to Renew:</b>", parse_mode="html", buttons=buttons)
@@ -460,43 +418,18 @@ async def buy_sub_menu_handler(event):
 async def buy_product_handler(event):
     await event.answer()
     user_id = event.sender_id
-    product_type = event.data.decode().split("_")[-1]  # "farmer" or "claimer"
-
+    # We only have one product now: Claimer
+    
     session = user_sessions.setdefault(user_id, {})
     session["expecting_username"] = True
-    session["product"] = product_type  # Store selected product
-    session.pop("demo_request", None)
-
-    prod_name = "Chat Farmer" if product_type == "farmer" else "Code Claimer"
+    session["product"] = "claimer" 
 
     text = (
-        f"<b>Buy {prod_name} — Step 1: Provide your Stake username</b>\n\n"
+        f"<b>Buy Code Claimer — Step 1: Provide your Stake username</b>\n\n"
         "Send only the username. Examples:\n"
         "• <code>alice123</code>\n"
         "• <code>@alice123</code>\n\n"
         "Do NOT send profile links or screenshots. After you send the username you'll be asked to confirm it."
-    )
-    try:
-        await event.edit(text, parse_mode="html")
-    except:
-        await event.respond(text, parse_mode="html")
-
-@bot.on(events.CallbackQuery(data=b"get_demo"))
-async def get_demo_handler(event):
-    await event.answer()
-    user_id = event.sender_id
-
-    session = user_sessions.setdefault(user_id, {})
-    session["expecting_username"] = True
-    session["demo_request"] = True
-    session["product"] = "farmer" # Demos are for farmer by default
-
-    text = (
-        "🎁 <b>Free Demo (3 hours) — Step 1: Provide your Stake username</b>\n\n"
-        "Send only the username. Examples:\n"
-        "• <code>alice123</code>\n"
-        "• <code>@alice123</code>\n\n"
-        "One demo per Telegram account + Stake username. After you send the username you'll be asked to confirm it."
     )
     try:
         await event.edit(text, parse_mode="html")
@@ -513,7 +446,6 @@ async def edit_username_handler(event):
     
     # Reset other states
     session.pop("expecting_username", None)
-    session.pop("demo_request", None)
     
     # Set state to expect OLD username
     session["expecting_rename_old"] = True
@@ -598,9 +530,6 @@ async def username_handler(event):
                     {"$set": {"username.$": new_username}}
                 )
                 
-                # Update demos collection
-                demos_col.update_many({"username": old_username}, {"$set": {"username": new_username}})
-                
                 # Update current session
                 session["username"] = new_username
                 
@@ -615,7 +544,7 @@ async def username_handler(event):
         
         return
 
-    # --- STANDARD PURCHASE / DEMO FLOW ---
+    # --- STANDARD PURCHASE FLOW ---
     if not session.get("expecting_username"):
         return  # Ignore unrelated text
 
@@ -681,62 +610,9 @@ async def confirm_yes_handler(event):
     except Exception:
         logger.exception("Failed to persist username to DB on confirm.")
 
-    # If this was a demo request (Only for Farmer)
-    if session.get("demo_request"):
-        already = demos_col.find_one({"$or": [{"user_id": user_id}, {"username": username_clean}]})
-        if already:
-            session.pop("demo_request", None)
-            return await event.respond("❌ Demo already used by this username or Telegram account.")
-
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=3)
-        demos_col.insert_one({"user_id": user_id, "username": username_clean, "expires_at": expires_at})
-        users_col.update_one(
-            {"user_id": user_id},
-            {"$set": {"demo_used": True, "demo_expires": expires_at, "demo_username": username_clean}},
-            upsert=True
-        )
-
-        # Activate Farmer API
-        await asyncio.to_thread(activate_subscription, f"@{username_clean}", 3, FARMER_API_URL)
-
-        text = (
-            f"✅ Demo activated for <code>@{username_clean}</code>\n"
-            f"Duration: 3 hours."
-        )
-        try:
-            await event.edit(text, parse_mode="html")
-        except:
-            await event.respond(text, parse_mode="html")
-
-        # FORWARD THREE messages (Farmer Assets)
-        for chat, msg_id in [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]:
-            try:
-                try:
-                    source_entity = await bot.get_entity(chat)
-                except Exception as e:
-                    logger.error(f"Could not resolve demo forward source '{chat}': {e}")
-                    source_entity = chat
-
-                fwd = await bot.forward_messages(entity=user_id, messages=msg_id, from_peer=source_entity)
-                if isinstance(fwd, list):
-                    fwd = fwd[0]
-                try:
-                    await bot.pin_message(user_id, fwd.id, notify=True)
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.exception(f"Demo forward error: {e}")
-
-        session.pop("demo_request", None)
-        return
-
-    # Purchase flow
-    product_type = session.get("product", "farmer")
-    prod_name = "Chat Farmer" if product_type == "farmer" else "Code Claimer"
-
     text = (
         f"Stake username saved: <code>@{username_clean}</code>\n"
-        f"Product: <b>{prod_name}</b>\n\n"
+        f"Product: <b>Code Claimer</b>\n\n"
         "Choose payment method:"
     )
     buttons = [
@@ -776,14 +652,11 @@ async def buy_crypto_handler(event):
     if not session or "username" not in session:
         return await event.respond("Restart with /start and send your username.")
 
-    product_type = session.get("product", "farmer")
+    header = "⚡ <b>Code Claimer Plans</b>"
     
-    if product_type == "claimer":
-        plans = PLANS_CLAIMER
-        header = "⚡ <b>Code Claimer Plans</b>"
-    else:
-        plans = PLANS_FARMER
-        header = "🤖 <b>Chat Farmer Plans</b>"
+    # Determine if it is Weekend (Sat=5, Sun=6)
+    now = datetime.now(timezone.utc)
+    is_weekend = now.weekday() in [5, 6]
 
     text = (
         f"{header}\n"
@@ -791,30 +664,50 @@ async def buy_crypto_handler(event):
         "Plans:\n"
     )
     
-    # Sort keys to ensure order: 6h, 12h, 1d, 2d, 4d, 7d
-    ordered_keys = ["6h", "12h", "1d", "2d", "4d", "7d"]
+    # Plans configuration based on day
+    buttons = []
     
-    for key in ordered_keys:
-        p = plans[key]
-        text += f"• {p['label']:<8} — {p['amount']} USDT\n"
+    # Add Standard 6h and 12h
+    p6 = PLANS_CLAIMER["6h"]
+    p12 = PLANS_CLAIMER["12h"]
+    buttons.append([
+        Button.inline(f"6h — {p6['amount']} USDT", b"plan_6h"),
+        Button.inline(f"12h — {p12['amount']} USDT", b"plan_12h"),
+    ])
+    
+    text += f"• {p6['label']:<8} — {p6['amount']} USDT\n"
+    text += f"• {p12['label']:<8} — {p12['amount']} USDT\n"
+
+    # Row 2: 1 Day OR Weekend Pass
+    row2 = []
+    if is_weekend:
+        # Block 1d, Show Weekend Pass
+        text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
+        row2.append(Button.inline("Weekend Pass — 5.0 USDT", b"plan_weekend"))
+    else:
+        # Show 1d
+        p1d = PLANS_CLAIMER["1d"]
+        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
+        row2.append(Button.inline(f"1d — {p1d['amount']} USDT", b"plan_1d"))
+    
+    buttons.append(row2)
+
+    # Row 3: 2d, 4d (Keep as is)
+    p2d = PLANS_CLAIMER["2d"]
+    p4d = PLANS_CLAIMER["4d"]
+    text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
+    text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
+    buttons.append([
+        Button.inline(f"2d — {p2d['amount']} USDT", b"plan_2d"),
+        Button.inline(f"4d — {p4d['amount']} USDT", b"plan_4d"),
+    ])
+
+    # Row 4: 7d (Keep as is)
+    p7d = PLANS_CLAIMER["7d"]
+    text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
+    buttons.append([Button.inline(f"7d — {p7d['amount']} USDT", b"plan_7d")])
 
     text += "\nSelect your plan:"
-
-    # Generate buttons dynamically based on the plan set
-    buttons = [
-        [
-            Button.inline(f"6h — {plans['6h']['amount']} USDT", b"plan_6h"),
-            Button.inline(f"12h — {plans['12h']['amount']} USDT", b"plan_12h"),
-        ],
-        [
-            Button.inline(f"1d — {plans['1d']['amount']} USDT", b"plan_1d"),
-            Button.inline(f"2d — {plans['2d']['amount']} USDT", b"plan_2d"),
-        ],
-        [
-            Button.inline(f"4d — {plans['4d']['amount']} USDT", b"plan_4d"),
-            Button.inline(f"7d — {plans['7d']['amount']} USDT", b"plan_7d"),
-        ],
-    ]
 
     try:
         await event.edit(text, parse_mode="html", buttons=buttons)
@@ -830,19 +723,37 @@ async def plan_handler(event):
     if not session or "username" not in session:
         return await event.respond("Restart with /start and send your username first.")
 
-    product_type = session.get("product", "farmer")
-    
-    # Select correct plan dictionary
-    plans_dict = PLANS_CLAIMER if product_type == "claimer" else PLANS_FARMER
-
     plan_key = event.data.decode().split("_", 1)[1]
-    plan = plans_dict.get(plan_key)
     
-    if not plan:
-        return await event.respond("Invalid plan. Try again.")
-
-    amount = plan["amount"]
-    label = plan["label"]
+    # Handle Special Weekend Plan
+    if plan_key == "weekend":
+        now = datetime.now(timezone.utc)
+        # Calculate hours until Sunday 23:59:59
+        # 0=Mon ... 5=Sat, 6=Sun
+        weekday = now.weekday()
+        days_ahead = 6 - weekday # If Sun(6)->0, If Sat(5)->1
+        
+        # Target: Next day after Sunday at 00:00:00 (which is Monday 00:00)
+        days_until_monday = 7 - weekday
+        next_monday = (now + timedelta(days=days_until_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        remaining = next_monday - now
+        hours = int(remaining.total_seconds() / 3600)
+        
+        # Minimum 1 hour just in case
+        if hours < 1: 
+            hours = 1
+            
+        amount = 5.0
+        label = "Weekend Pass"
+    else:
+        # Standard Plans
+        plan = PLANS_CLAIMER.get(plan_key)
+        if not plan:
+            return await event.respond("Invalid plan. Try again.")
+        amount = plan["amount"]
+        label = plan["label"]
+        hours = plan["hours"]
 
     if user_id in user_tasks:
         old = user_tasks[user_id]
@@ -878,12 +789,11 @@ async def plan_handler(event):
     session["track_id"] = track_id
     session["plan_key"] = plan_key
     
-    prod_display = "Code Claimer" if product_type == "claimer" else "Chat Farmer"
-
     text = (
-        f"✅ Product: <b>{prod_display}</b>\n"
+        f"✅ Product: <b>Code Claimer</b>\n"
         f"✅ Plan: <b>{label}</b>\n"
-        f"Amount: <b>{amount} USDT</b>\n\n"
+        f"Amount: <b>{amount} USDT</b>\n"
+        f"Duration: <b>{hours} Hours</b>\n\n"
         "Click <b>Pay</b> to open OxaPay.\n"
         "Payment window: 15 minutes."
     )
@@ -899,8 +809,7 @@ async def plan_handler(event):
     except:
         await event.respond(text, parse_mode="html", buttons=buttons)
 
-    # Pass product_type to wait_for_payment
-    task = asyncio.create_task(wait_for_payment(user_id, track_id, plan_key, product_type))
+    task = asyncio.create_task(wait_for_payment(user_id, track_id, label, hours))
     user_tasks[user_id] = task
 
 # ================== BROADCAST ==================
@@ -944,7 +853,7 @@ async def broadcast_handler(event):
 # ================== MAIN ==================
 
 def main():
-    logger.info("Stake Payment Bot (Farmer + Claimer) is running...")
+    logger.info("Stake Payment Bot (Claimer Only) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
