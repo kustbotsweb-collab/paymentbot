@@ -491,6 +491,12 @@ async def referral_menu_handler(event):
     user_data = users_col.find_one({"user_id": user_id})
     points = user_data.get("points", 0.0) if user_data else 0.0
     
+    # Count referrals
+    try:
+        ref_count = users_col.count_documents({"referrer_id": user_id})
+    except:
+        ref_count = 0
+    
     # Generate Link
     if not bot_username:
          me = await bot.get_me()
@@ -502,7 +508,8 @@ async def referral_menu_handler(event):
         "<b>🎁 Refer & Earn Program</b>\n\n"
         "Invite friends and earn <b>10%</b> of their spendings as points!\n"
         "1 Point = 1 USDT value.\n\n"
-        f"💰 <b>Your Balance:</b> {points:.2f} Points\n\n"
+        f"💰 <b>Your Balance:</b> {points:.2f} Points\n"
+        f"👥 <b>Total Referrals:</b> {ref_count}\n\n"
         "👇 <b>Your Referral Link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         "Share this link. You get notified instantly when someone joins."
@@ -517,8 +524,48 @@ async def referral_menu_handler(event):
 
 @bot.on(events.CallbackQuery(data=b"back_to_start"))
 async def back_start_handler(event):
-    # Simulate start menu
-    await start_handler(event)
+    await event.answer()
+    user_id = event.sender_id
+
+    # Simulate start menu logic manually since we are in a callback
+    # Fetch user to check "first_time" logic (used for Edit Username button)
+    try:
+        existing = users_col.find_one({"user_id": user_id})
+    except:
+        existing = None
+
+    # Logic from start_handler regarding buttons
+    buttons = []
+    buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
+    if existing:
+        buttons.append([Button.inline("✏️ Edit username", b"edit_username")])
+    buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
+    buttons.append([
+        Button.url("🛠 Support", SUPPORT_CHAT_LINK),
+        Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
+    ])
+
+    caption_text = (
+        "<b>🚀 Kust Bots — Premium Tools</b>\n\n"
+        "<b>Code Claimer:</b> High-speed code claiming system\n\n"
+        "Tap a button below to continue."
+    )
+
+    # We cannot use send_file in edit easily if changing media, but since
+    # previous message might be text-only (Referral Menu), we try to send fresh or edit text.
+    # To restore the main menu Image, we should delete the old message and send a new one,
+    # or just send a new one. Sending a new one is safer for image restoration.
+    
+    try:
+        await event.delete() # Delete the referral menu message
+    except:
+        pass
+
+    try:
+        await bot.send_file(user_id, START_IMAGE_URL, caption=caption_text, parse_mode="html", buttons=buttons)
+    except Exception as e:
+        # Fallback if image fails or can't send
+        await bot.send_message(user_id, caption_text, parse_mode="html", buttons=buttons)
 
 # --- PRODUCT SELECTION HANDLERS ---
 
