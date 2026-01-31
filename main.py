@@ -44,10 +44,8 @@ RENAME_USER_ENDPOINT = f"{CLAIMER_API_URL}/rename_user"
 
 # --- PRICING PLANS ---
 
-# Claimer Plans (Base + 0.2 USDT)
+# Claimer Plans (REMOVED 6h/12h, kept only Day plans)
 PLANS_CLAIMER = {
-    "6h":  {"label": "6 Hours",   "amount": 2.5,  "hours": 6},
-    "12h": {"label": "12 Hours",  "amount": 2.5,  "hours": 12},
     "1d":  {"label": "1 Day",     "amount": 2.5,  "hours": 24},
     "2d":  {"label": "2 Days",    "amount": 4.5,  "hours": 48},
     "4d":  {"label": "4 Days",    "amount": 8.0,  "hours": 96},
@@ -831,32 +829,21 @@ async def buy_crypto_handler(event):
     # Plans configuration based on day
     buttons = []
     
-    # Add Standard 6h and 12h
-    p6 = PLANS_CLAIMER["6h"]
-    p12 = PLANS_CLAIMER["12h"]
-    buttons.append([
-        Button.inline(f"6h — {p6['amount']} USDT", b"plan_6h"),
-        Button.inline(f"12h — {p12['amount']} USDT", b"plan_12h"),
-    ])
-    
-    text += f"• {p6['label']:<8} — {p6['amount']} USDT\n"
-    text += f"• {p12['label']:<8} — {p12['amount']} USDT\n"
-
-    # Row 2: 1 Day OR Weekend Pass
-    row2 = []
+    # Row 1: 1 Day OR Weekend Pass
+    row1 = []
     if is_weekend:
-        # Block 1d, Show Weekend Pass
+        # Show Weekend Pass
         text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
-        row2.append(Button.inline("Weekend Pass — 5.0 USDT", b"plan_weekend"))
+        row1.append(Button.inline("Weekend Pass — 5.0 USDT", b"plan_weekend"))
     else:
         # Show 1d
         p1d = PLANS_CLAIMER["1d"]
         text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        row2.append(Button.inline(f"1d — {p1d['amount']} USDT", b"plan_1d"))
+        row1.append(Button.inline(f"1d — {p1d['amount']} USDT", b"plan_1d"))
     
-    buttons.append(row2)
+    buttons.append(row1)
 
-    # Row 3: 2d, 4d (Keep as is)
+    # Row 2: 2d, 4d
     p2d = PLANS_CLAIMER["2d"]
     p4d = PLANS_CLAIMER["4d"]
     text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
@@ -866,7 +853,7 @@ async def buy_crypto_handler(event):
         Button.inline(f"4d — {p4d['amount']} USDT", b"plan_4d"),
     ])
 
-    # Row 4: 7d (Keep as is)
+    # Row 3: 7d
     p7d = PLANS_CLAIMER["7d"]
     text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
     buttons.append([Button.inline(f"7d — {p7d['amount']} USDT", b"plan_7d")])
