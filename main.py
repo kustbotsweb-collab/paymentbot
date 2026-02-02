@@ -20,7 +20,7 @@ UPI_DM_LINK = "https://t.me/KustXoffical"
 CLAIMER_FORWARD_1 = ("kustvault", 5)
 CLAIMER_FORWARD_2 = ("kustvault", 6)
 CLAIMER_FORWARD_3 = ("kustvault", 7)
-CLAIMER_API_URL = "https://code-auth1-73614131da82.herokuapp.com"
+CLAIMER_API_URL = "https://code-auth11-4cc0b14f630c.herokuapp.com"
 
 # Start image
 START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c14bc87a40b4b6a9973"
