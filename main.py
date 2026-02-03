@@ -17,10 +17,18 @@ UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
 UPI_DM_LINK = "https://t.me/KustXoffical"
 
 # --- Code Claimer Assets ---
+CLAIMER_API_URL = "https://code-auth11-4cc0b14f630c.herokuapp.com"
+# Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("kustvault", 5)
 CLAIMER_FORWARD_2 = ("kustvault", 6)
 CLAIMER_FORWARD_3 = ("kustvault", 7)
-CLAIMER_API_URL = "https://code-auth11-4cc0b14f630c.herokuapp.com"
+
+# --- Chat Farmer Assets ---
+FARMER_API_URL = "https://farmer-auth1-a6807b536c38.herokuapp.com"
+# Forwards for Farmer (Using same vault for now, change if needed)
+FARMER_FORWARD_1 = ("kustvault", 5)
+FARMER_FORWARD_2 = ("kustvault", 6)
+FARMER_FORWARD_3 = ("kustvault", 7)
 
 # Start image
 START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c14bc87a40b4b6a9973"
@@ -38,26 +46,22 @@ BOT_OWNER_ID = 7618467489
 OXAPAY_API_KEY = "SNJEE3-MOEI0B-ZR0FW4-UWSLXH"
 OXAPAY_API_BASE = "https://api.oxapay.com"
 
-# Active users checker settings (Using Claimer API now)
-ACTIVE_USERS_ENDPOINT = f"{CLAIMER_API_URL}/active_users"
-RENAME_USER_ENDPOINT = f"{CLAIMER_API_URL}/rename_user"
+# Active users checker settings
+ACTIVE_USERS_POLL_INTERVAL = 300  # seconds between active_users polls (5 minutes)
+REMINDER_THRESHOLD_MINUTES = 60   # notify when <= 60 minutes remain
 
 # --- PRICING PLANS ---
 
-# Claimer Plans (REMOVED 6h/12h, kept only Day plans)
-PLANS_CLAIMER = {
-    "1d":  {"label": "1 Day",     "amount": 2.5,  "hours": 24},
-    "2d":  {"label": "2 Days",    "amount": 4.5,  "hours": 48},
-    "4d":  {"label": "4 Days",    "amount": 8.0,  "hours": 96},
-    "7d":  {"label": "7 Days",    "amount": 12.5, "hours": 168},
+# Plans (Shared pricing for both)
+PLANS_COMMON = {
+    "1d":  {"label": "1 Day",      "amount": 2.5,  "hours": 24},
+    "2d":  {"label": "2 Days",     "amount": 4.5,  "hours": 48},
+    "4d":  {"label": "4 Days",     "amount": 8.0,  "hours": 96},
+    "7d":  {"label": "7 Days",     "amount": 12.5, "hours": 168},
 }
 
 PAYMENT_TIMEOUT = 15 * 60
 POLL_INTERVAL = 10
-
-# Active users checker settings
-ACTIVE_USERS_POLL_INTERVAL = 300  # seconds between active_users polls (5 minutes)
-REMINDER_THRESHOLD_MINUTES = 60   # notify when <= 60 minutes remain
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("stake_payment_bot")
@@ -74,9 +78,6 @@ _reminder_sent = {}
 # ================== OXAPAY HELPERS ==================
 
 def create_invoice(amount: float, currency: str = "USDT", lifetime: int = 60):
-    """
-    Synchronous network call to create invoice. Returns raw JSON.
-    """
     url = f"{OXAPAY_API_BASE}/v1/payment/invoice"
     headers = {"merchant_api_key": OXAPAY_API_KEY, "Content-Type": "application/json"}
     body = {"amount": amount, "currency": currency, "lifetime": lifetime}
@@ -85,9 +86,6 @@ def create_invoice(amount: float, currency: str = "USDT", lifetime: int = 60):
     return r.json()
 
 def query_invoice(track_id: str):
-    """
-    Synchronous network call to query invoice. Returns raw JSON.
-    """
     url = f"{OXAPAY_API_BASE}/merchants/inquiry"
     headers = {"Content-Type": "application/json"}
     body = {"merchant": OXAPAY_API_KEY, "trackId": track_id}
@@ -95,9 +93,9 @@ def query_invoice(track_id: str):
     r.raise_for_status()
     return r.json()
 
-def activate_subscription(username_with_at: str, hours: int):
+def activate_subscription(username_with_at: str, hours: int, api_url: str):
     """
-    Synchronous activation call using CLAIMER_API_URL.
+    Synchronous activation call to the specific product API.
     """
     try:
         params = {
@@ -105,19 +103,16 @@ def activate_subscription(username_with_at: str, hours: int):
             "admin": "admin1234",
             "duration": hours
         }
-        url = f"{CLAIMER_API_URL}/auth" 
+        url = f"{api_url}/auth" 
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
-        logger.info(f"[ACTIVATE] Activated subscription for {username_with_at} for {hours} hours. Response: {r.text}")
+        logger.info(f"[ACTIVATE] Activated for {username_with_at} on {api_url}. Response: {r.text}")
         return True
     except Exception as e:
-        logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at}: {e}")
+        logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at} on {api_url}: {e}")
         return False
 
 def extract_status_from_query_response(resp_json):
-    """
-    OxaPay responses may vary. Try multiple common paths to find a status string.
-    """
     if not resp_json:
         return None
     # direct status field
@@ -147,9 +142,17 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
         logger.warning(f"wait_for_payment: no session for {user_id}")
         return False
 
-    api_url = CLAIMER_API_URL
-    forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
-    product_name = "Code Claimer"
+    product_type = session.get("product", "claimer")
+    
+    # Configure variables based on product
+    if product_type == "farmer":
+        api_url = FARMER_API_URL
+        product_name = "Chat Farmer"
+        forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
+    else:
+        api_url = CLAIMER_API_URL
+        product_name = "Code Claimer"
+        forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
 
     start = time.time()
     while time.time() - start < PAYMENT_TIMEOUT:
@@ -166,32 +169,25 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                 username_clean = session.get("username", "UNKNOWN")
 
                 # call activation API in a background thread
-                activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours)
+                activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
 
                 # Persist username to DB if not present
                 user_record = users_col.find_one({"user_id": user_id})
                 if user_record:
                     users_col.update_one({"user_id": user_id}, {"$set": {"username": username_clean}})
                 else:
-                    # Should exist, but just in case
                     users_col.insert_one({"user_id": user_id, "username": username_clean, "points": 0.0})
                     user_record = {"user_id": user_id}
 
                 # === REFERRAL REWARD SYSTEM ===
-                # Check if this user was referred by someone
                 referrer_id = user_record.get("referrer_id")
                 if referrer_id:
                     try:
-                        # 10% reward
                         reward_points = plan_amount * 0.10
-                        
-                        # Update referrer balance
                         users_col.update_one(
                             {"user_id": referrer_id},
                             {"$inc": {"points": reward_points}}
                         )
-                        
-                        # Notify Referrer
                         try:
                             await bot.send_message(
                                 referrer_id,
@@ -202,7 +198,6 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                             )
                         except Exception as e:
                             logger.error(f"Failed to notify referrer {referrer_id}: {e}")
-                            
                     except Exception as e:
                         logger.error(f"Error processing referral reward: {e}")
 
@@ -222,7 +217,6 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         try:
                             source_entity = await bot.get_entity(chat)
                         except Exception as e:
-                            logger.error(f"Could not resolve source entity '{chat}': {e}")
                             source_entity = chat 
 
                         fwd = await bot.forward_messages(entity=user_id, messages=msg_id, from_peer=source_entity)
@@ -253,46 +247,54 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
 # ================== RENAME / ACTIVE USERS API HELPERS ==================
 
-def get_active_users():
+def get_active_users(api_url):
     """
-    Call GET /active_users on the CLAIMER API.
+    Call GET /active_users on the specific API.
     """
     try:
-        r = requests.get(ACTIVE_USERS_ENDPOINT, timeout=20)
+        r = requests.get(f"{api_url}/active_users", timeout=20)
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        logger.exception(f"Failed to fetch active users: {e}")
+        logger.error(f"Failed to fetch active users from {api_url}: {e}")
         return None
 
 def rename_user_api(old_username: str, new_username: str):
     """
-    POST /rename_user with form fields old_username, new_username and admin.
+    Attempts to rename user on BOTH Claimer and Farmer APIs to ensure sync.
     """
-    try:
-        if old_username and not old_username.startswith("@"):
-            old_username = f"@{old_username}"
-        if new_username and not new_username.startswith("@"):
-            new_username = f"@{new_username}"
-            
-        data = {"old_username": old_username, "new_username": new_username, "admin": "admin1234"}
-        r = requests.post(RENAME_USER_ENDPOINT, data=data, timeout=20)
+    results = []
+    
+    if old_username and not old_username.startswith("@"):
+        old_username = f"@{old_username}"
+    if new_username and not new_username.startswith("@"):
+        new_username = f"@{new_username}"
+        
+    data = {"old_username": old_username, "new_username": new_username, "admin": "admin1234"}
 
-        if r.status_code >= 200 and r.status_code < 300:
-            try:
-                return r.json()
-            except Exception:
-                return {"ok": True, "status_code": r.status_code, "response_text": r.text}
-        else:
-            try:
-                err = r.json()
-            except Exception:
-                err = r.text
-            logger.warning(f"rename_user_api returned error {r.status_code}: {err}")
-            return {"ok": False, "status_code": r.status_code, "response": err}
-    except Exception as e:
-        logger.exception(f"rename_user_api error: {e}")
-        return {"ok": False, "error": str(e)}
+    # List of endpoints to update
+    endpoints = [
+        f"{CLAIMER_API_URL}/rename_user",
+        f"{FARMER_API_URL}/rename_user"
+    ]
+
+    success = False
+    details = ""
+
+    for ep in endpoints:
+        try:
+            r = requests.post(ep, data=data, timeout=10)
+            if r.status_code >= 200 and r.status_code < 300:
+                success = True
+            else:
+                details += f"Fail {ep}: {r.status_code} "
+        except Exception as e:
+            details += f"Err {ep}: {str(e)} "
+            
+    if success:
+        return {"ok": True}
+    else:
+        return {"ok": False, "error": details}
 
 # ================== ACTIVE USERS CHECKER (background) ==================
 
@@ -307,13 +309,24 @@ def _parse_iso_datetime(s: str):
 
 async def check_active_users_loop():
     await asyncio.sleep(5)
-    logger.info("Active users reminder loop started.")
+    logger.info("Active users reminder loop started (Dual API).")
+    
+    api_sources = [
+        {"name": "Code Claimer", "url": CLAIMER_API_URL},
+        {"name": "Chat Farmer", "url": FARMER_API_URL}
+    ]
+
     while True:
         try:
-            data = await asyncio.to_thread(get_active_users)
-            if not data:
-                logger.debug("No active users data returned.")
-            else:
+            for source in api_sources:
+                api_name = source["name"]
+                api_url = source["url"]
+                
+                data = await asyncio.to_thread(get_active_users, api_url)
+                
+                if not data:
+                    continue
+
                 users = data.get("active_users") if isinstance(data, dict) else None
                 if isinstance(users, list):
                     now = datetime.now(timezone.utc)
@@ -334,10 +347,13 @@ async def check_active_users_loop():
                             minutes_left = time_left.total_seconds() / 60
 
                             username_clean = username.lstrip("@").strip()
+                            
+                            # Unique key for reminder: username + product + expire_time
+                            reminder_key = f"{username_clean.lower()}_{api_name}_{expires_dt.isoformat()}"
+
                             if minutes_left <= REMINDER_THRESHOLD_MINUTES and minutes_left > 0:
-                                previous = _reminder_sent.get(username_clean.lower())
-                                expires_iso = expires_dt.isoformat()
-                                if previous == expires_iso:
+                                previous = _reminder_sent.get(reminder_key)
+                                if previous:
                                     continue
 
                                 rec = users_col.find_one({"username": username_clean})
@@ -351,8 +367,10 @@ async def check_active_users_loop():
                                 try:
                                     rem_text = (
                                         f"⏳ <b>Subscription ending soon</b>\n\n"
-                                        f"Your Stake username <code>@{username_clean}</code> subscription expires at {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}.\n"
-                                        f"Time left: approximately {int(minutes_left)} minutes.\n\n"
+                                        f"Product: <b>{api_name}</b>\n"
+                                        f"User: <code>@{username_clean}</code>\n"
+                                        f"Expires: {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                                        f"Time left: ~{int(minutes_left)} mins.\n\n"
                                         "Renew now to avoid interruption."
                                     )
                                     buttons = [
@@ -360,12 +378,13 @@ async def check_active_users_loop():
                                         [Button.url("🛠 Support", SUPPORT_CHAT_LINK)],
                                     ]
                                     await bot.send_message(user_id, rem_text, parse_mode="html", buttons=buttons)
-                                    logger.info(f"Sent reminder to @{username_clean} (uid={user_id})")
-                                    _reminder_sent[username_clean.lower()] = expires_iso
+                                    logger.info(f"Sent reminder to @{username_clean} for {api_name}")
+                                    _reminder_sent[reminder_key] = True
                                 except Exception as e:
                                     logger.exception(f"Failed to send reminder to {username_clean}: {e}")
                         except Exception as ee:
                             logger.exception(f"Error processing active user entry: {ee}")
+        
         except Exception as e:
             logger.exception(f"check_active_users_loop error: {e}")
 
@@ -414,14 +433,10 @@ async def start_handler(event):
             "first_seen": datetime.now(timezone.utc),
             "points": 0.0
         }
-        # Only set referrer if it's their first time ever
         if referrer_id:
-            # Check if referrer exists in DB
             ref_user = users_col.find_one({"user_id": referrer_id})
             if ref_user:
                 new_user_doc["referrer_id"] = referrer_id
-                
-                # Notify Referrer
                 try:
                     await bot.send_message(
                         referrer_id, 
@@ -435,7 +450,6 @@ async def start_handler(event):
 
         users_col.insert_one(new_user_doc)
     else:
-        # Just update seen time
         users_col.update_one(
             {"user_id": user_id},
             {"$set": {"last_seen": datetime.now(timezone.utc)}}
@@ -443,18 +457,20 @@ async def start_handler(event):
 
     caption_text = (
         "<b>🚀 Kust Bots — Premium Tools</b>\n\n"
-        "<b>Code Claimer:</b> High-speed code claiming system\n\n"
-        "Tap a button below to continue."
+        "<b>Available Products:</b>\n"
+        "• Code Claimer (High-speed claiming)\n"
+        "• Chat Farmer (Automated chat farming)\n\n"
+        "Select a product to purchase or manage your account."
     )
 
     buttons = []
-    # Purchase buttons
+    # Purchase buttons (Product Selection)
     buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
+    buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
 
     if not first_time:
         buttons.append([Button.inline("✏️ Edit username", b"edit_username")])
     
-    # Referral Button
     buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
     
     buttons.append([
@@ -468,7 +484,6 @@ async def start_handler(event):
         await bot.send_file(user_id, START_IMAGE_URL, caption=caption_text, parse_mode="html", buttons=buttons)
     except Exception as e:
         logger.error(f"send_file failed: {e}")
-        # Fallback to text if image fails
         await event.respond(caption_text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.NewMessage(pattern=r"^/(help|support)$"))
@@ -485,17 +500,14 @@ async def referral_menu_handler(event):
     await event.answer()
     user_id = event.sender_id
     
-    # Get User Data for Points
     user_data = users_col.find_one({"user_id": user_id})
     points = user_data.get("points", 0.0) if user_data else 0.0
     
-    # Count referrals
     try:
         ref_count = users_col.count_documents({"referrer_id": user_id})
     except:
         ref_count = 0
     
-    # Generate Link
     if not bot_username:
          me = await bot.get_me()
          globals()['bot_username'] = me.username
@@ -525,16 +537,15 @@ async def back_start_handler(event):
     await event.answer()
     user_id = event.sender_id
 
-    # Simulate start menu logic manually since we are in a callback
-    # Fetch user to check "first_time" logic (used for Edit Username button)
     try:
         existing = users_col.find_one({"user_id": user_id})
     except:
         existing = None
 
-    # Logic from start_handler regarding buttons
     buttons = []
     buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
+    buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
+
     if existing:
         buttons.append([Button.inline("✏️ Edit username", b"edit_username")])
     buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
@@ -545,34 +556,30 @@ async def back_start_handler(event):
 
     caption_text = (
         "<b>🚀 Kust Bots — Premium Tools</b>\n\n"
-        "<b>Code Claimer:</b> High-speed code claiming system\n\n"
-        "Tap a button below to continue."
+        "<b>Available Products:</b>\n"
+        "• Code Claimer (High-speed claiming)\n"
+        "• Chat Farmer (Automated chat farming)\n\n"
+        "Select a product to purchase or manage your account."
     )
-
-    # We cannot use send_file in edit easily if changing media, but since
-    # previous message might be text-only (Referral Menu), we try to send fresh or edit text.
-    # To restore the main menu Image, we should delete the old message and send a new one,
-    # or just send a new one. Sending a new one is safer for image restoration.
     
     try:
-        await event.delete() # Delete the referral menu message
+        await event.delete() 
     except:
         pass
 
     try:
         await bot.send_file(user_id, START_IMAGE_URL, caption=caption_text, parse_mode="html", buttons=buttons)
     except Exception as e:
-        # Fallback if image fails or can't send
         await bot.send_message(user_id, caption_text, parse_mode="html", buttons=buttons)
 
 # --- PRODUCT SELECTION HANDLERS ---
 
 @bot.on(events.CallbackQuery(data=b"buy_sub"))
 async def buy_sub_menu_handler(event):
-    # If user clicks "Renew" from reminder
     await event.answer()
     buttons = [
         [Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")],
+        [Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")],
     ]
     await event.edit("<b>Select Product to Renew:</b>", parse_mode="html", buttons=buttons)
 
@@ -580,14 +587,22 @@ async def buy_sub_menu_handler(event):
 async def buy_product_handler(event):
     await event.answer()
     user_id = event.sender_id
-    # We only have one product now: Claimer
+    
+    # Determine product from callback data
+    data_str = event.data.decode()
+    product_type = "claimer"
+    product_display = "Code Claimer"
+    
+    if "farmer" in data_str:
+        product_type = "farmer"
+        product_display = "Chat Farmer"
     
     session = user_sessions.setdefault(user_id, {})
     session["expecting_username"] = True
-    session["product"] = "claimer" 
+    session["product"] = product_type
 
     text = (
-        f"<b>Buy Code Claimer — Step 1: Provide your Stake username</b>\n\n"
+        f"<b>Buy {product_display} — Step 1: Provide your Stake username</b>\n\n"
         "Send only the username. Examples:\n"
         "• <code>alice123</code>\n"
         "• <code>@alice123</code>\n\n"
@@ -606,10 +621,8 @@ async def edit_username_handler(event):
     user_id = event.sender_id
     session = user_sessions.setdefault(user_id, {})
     
-    # Reset other states
     session.pop("expecting_username", None)
     
-    # Set state to expect OLD username
     session["expecting_rename_old"] = True
     session["expecting_rename_new"] = False
     
@@ -661,7 +674,6 @@ async def username_handler(event):
         old_username = session.get("rename_old_value")
         new_username = username_clean
         
-        # Clear states immediately to prevent loops
         session["expecting_rename_new"] = False
         session.pop("rename_old_value", None)
         
@@ -671,18 +683,16 @@ async def username_handler(event):
 
         await event.respond(f"🔄 Processing change from <code>@{old_username}</code> to <code>@{new_username}</code>...", parse_mode="html")
 
-        # Call API
+        # Call API (Tries both servers)
         try:
             resp = await asyncio.to_thread(rename_user_api, old_username, new_username)
             
-            # If API fails
             if isinstance(resp, dict) and resp.get("ok") is False:
                 await event.respond(f"❌ Rename API reported failure: {resp}\n\nLocal username not changed.", parse_mode="html")
                 return
 
-            # Update DB references locally so reminders work for the new username
+            # Update DB references locally
             try:
-                # Update users collection
                 # 1. Update where it matches exactly as a string
                 users_col.update_many({"username": old_username}, {"$set": {"username": new_username}})
                 
@@ -692,7 +702,6 @@ async def username_handler(event):
                     {"$set": {"username.$": new_username}}
                 )
                 
-                # Update current session
                 session["username"] = new_username
                 
             except Exception as e:
@@ -713,9 +722,14 @@ async def username_handler(event):
     # Save as pending until user confirms
     session["pending_username"] = username_clean
     session["expecting_username"] = False
+    
+    # Determine product display name
+    prod = session.get("product", "claimer")
+    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
 
     text = (
-        "You entered the Stake username:\n\n"
+        f"Product: <b>{prod_name}</b>\n\n"
+        "You entered the Stake username:\n"
         f"<b>@{username_clean}</b>\n\n"
         "Is this correct?"
     )
@@ -772,9 +786,12 @@ async def confirm_yes_handler(event):
     except Exception:
         logger.exception("Failed to persist username to DB on confirm.")
 
+    prod = session.get("product", "claimer")
+    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
+
     text = (
         f"Stake username saved: <code>@{username_clean}</code>\n"
-        f"Product: <b>Code Claimer</b>\n\n"
+        f"Product: <b>{prod_name}</b>\n\n"
         "Choose payment method:"
     )
     buttons = [
@@ -814,7 +831,10 @@ async def buy_crypto_handler(event):
     if not session or "username" not in session:
         return await event.respond("Restart with /start and send your username.")
 
-    header = "⚡ <b>Code Claimer Plans</b>"
+    prod = session.get("product", "claimer")
+    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
+
+    header = f"⚡ <b>{prod_name} Plans</b>"
     
     # Determine if it is Weekend (Sat=5, Sun=6)
     now = datetime.now(timezone.utc)
@@ -826,26 +846,23 @@ async def buy_crypto_handler(event):
         "Plans:\n"
     )
     
-    # Plans configuration based on day
     buttons = []
     
     # Row 1: 1 Day OR Weekend Pass
     row1 = []
     if is_weekend:
-        # Show Weekend Pass
         text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
         row1.append(Button.inline("Weekend Pass — 5.0 USDT", b"plan_weekend"))
     else:
-        # Show 1d
-        p1d = PLANS_CLAIMER["1d"]
+        p1d = PLANS_COMMON["1d"]
         text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
         row1.append(Button.inline(f"1d — {p1d['amount']} USDT", b"plan_1d"))
     
     buttons.append(row1)
 
     # Row 2: 2d, 4d
-    p2d = PLANS_CLAIMER["2d"]
-    p4d = PLANS_CLAIMER["4d"]
+    p2d = PLANS_COMMON["2d"]
+    p4d = PLANS_COMMON["4d"]
     text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
     text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
     buttons.append([
@@ -854,7 +871,7 @@ async def buy_crypto_handler(event):
     ])
 
     # Row 3: 7d
-    p7d = PLANS_CLAIMER["7d"]
+    p7d = PLANS_COMMON["7d"]
     text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
     buttons.append([Button.inline(f"7d — {p7d['amount']} USDT", b"plan_7d")])
 
@@ -886,7 +903,6 @@ async def plan_handler(event):
         remaining = next_monday - now
         hours = int(remaining.total_seconds() / 3600)
         
-        # Minimum 1 hour just in case
         if hours < 1: 
             hours = 1
             
@@ -894,7 +910,7 @@ async def plan_handler(event):
         label = "Weekend Pass"
     else:
         # Standard Plans
-        plan = PLANS_CLAIMER.get(plan_key)
+        plan = PLANS_COMMON.get(plan_key)
         if not plan:
             return await event.respond("Invalid plan. Try again.")
         amount = plan["amount"]
@@ -911,9 +927,12 @@ async def plan_handler(event):
     
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
+    
+    prod = session.get("product", "claimer")
+    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
 
     text = (
-        f"🛒 <b>Checkout</b>\n\n"
+        f"🛒 <b>Checkout: {prod_name}</b>\n\n"
         f"Plan: <b>{label}</b>\n"
         f"Cost: <b>{amount} USDT</b> (or Points)\n"
         f"Duration: <b>{hours} Hours</b>\n\n"
@@ -946,6 +965,16 @@ async def pay_points_handler(event):
     hours = session["selected_hours"]
     username_clean = session["username"]
     
+    prod = session.get("product", "claimer")
+    if prod == "farmer":
+        api_url = FARMER_API_URL
+        prod_name = "Chat Farmer"
+        forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
+    else:
+        api_url = CLAIMER_API_URL
+        prod_name = "Code Claimer"
+        forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
+    
     # Check Balance
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
@@ -957,16 +986,14 @@ async def pay_points_handler(event):
     # Deduct Points
     users_col.update_one({"user_id": user_id}, {"$inc": {"points": -amount}})
     
-    await event.edit("🔄 activating subscription using points...", parse_mode="html")
+    await event.edit(f"🔄 Activating {prod_name} subscription...", parse_mode="html")
     
     # Activate
-    activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours)
-    
-    product_name = "Code Claimer"
+    activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
     
     if activation_ok:
         # FORWARD + PIN
-        for chat, msg_id in [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]:
+        for chat, msg_id in forwards:
             try:
                 try:
                     source_entity = await bot.get_entity(chat)
@@ -980,7 +1007,7 @@ async def pay_points_handler(event):
             
         await event.edit(
             f"✅ <b>Paid with Points!</b>\n\n"
-            f"Your <b>{product_name} - {label}</b> subscription is activated.\n"
+            f"Your <b>{prod_name} - {label}</b> subscription is activated.\n"
             f"Deducted: <b>{amount} Points</b>\n"
             f"Remaining: <b>{user_points - amount:.2f} Points</b>\n"
             f"Duration: <b>{hours} hours</b>.",
@@ -1003,7 +1030,9 @@ async def pay_crypto_inv_handler(event):
     amount = session["selected_amount"]
     label = session["selected_label"]
     hours = session["selected_hours"]
-    plan_key = session["selected_plan_key"]
+    
+    prod = session.get("product", "claimer")
+    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
 
     if user_id in user_tasks:
         old = user_tasks[user_id]
@@ -1041,7 +1070,7 @@ async def pay_crypto_inv_handler(event):
     session["track_id"] = track_id
     
     text = (
-        f"✅ Product: <b>Code Claimer</b>\n"
+        f"✅ Product: <b>{prod_name}</b>\n"
         f"✅ Plan: <b>{label}</b>\n"
         f"Amount: <b>{amount} USDT</b>\n"
         f"Duration: <b>{hours} Hours</b>\n\n"
@@ -1105,7 +1134,7 @@ async def broadcast_handler(event):
 # ================== MAIN ==================
 
 def main():
-    logger.info("Stake Payment Bot (Claimer Only + Referrals) is running...")
+    logger.info("Stake Payment Bot (Multi-Product) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
