@@ -26,9 +26,9 @@ CLAIMER_FORWARD_3 = ("kustvault", 7)
 # --- Chat Farmer Assets ---
 FARMER_API_URL = "https://farmer-auth1-a6807b536c38.herokuapp.com"
 # Forwards for Farmer (Using same vault for now, change if needed)
-FARMER_FORWARD_1 = ("kustvault", 5)
-FARMER_FORWARD_2 = ("kustvault", 6)
-FARMER_FORWARD_3 = ("kustvault", 7)
+FARMER_FORWARD_1 = ("kustvault", 2)
+FARMER_FORWARD_2 = ("kustvault", 3)
+FARMER_FORWARD_3 = ("kustvault", 4)
 
 # Start image
 START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c14bc87a40b4b6a9973"
