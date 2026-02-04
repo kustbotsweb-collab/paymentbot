@@ -390,6 +390,82 @@ async def check_active_users_loop():
 
         await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
 
+
+# ================== ADD POINTS COMMAND ==================
+
+@bot.on(events.NewMessage(pattern=r"^/add\s"))
+async def add_points_handler(event):
+    # 1. Security Check: Only allow BOT_OWNER_ID
+    if event.sender_id != BOT_OWNER_ID:
+        return
+
+    # 2. Parse Arguments: /add <target> <amount>
+    args = event.message.message.split()
+    if len(args) != 3:
+        return await event.reply("❌ Usage: `/add <@username/userid> <amount>`", parse_mode="markdown")
+
+    target_arg = args[1]
+    amount_arg = args[2]
+
+    # 3. Validate Amount
+    try:
+        amount = float(amount_arg)
+    except ValueError:
+        return await event.reply("❌ Invalid amount. Please enter a number.")
+
+    # 4. Find Target User in DB
+    target_user_id = None
+    user_record = None
+
+    # Check if input is User ID (digits)
+    if target_arg.isdigit():
+        target_user_id = int(target_arg)
+        user_record = users_col.find_one({"user_id": target_user_id})
+    else:
+        # Check if input is Username (remove @ if present)
+        clean_username = target_arg.lstrip("@")
+        # Try to find by username
+        user_record = users_col.find_one({"username": clean_username})
+        if user_record:
+            target_user_id = user_record.get("user_id")
+
+    if not user_record or not target_user_id:
+        return await event.reply(f"❌ User `{target_arg}` not found in the database.", parse_mode="markdown")
+
+    # 5. Update Database
+    try:
+        # Add points
+        users_col.update_one({"user_id": target_user_id}, {"$inc": {"points": amount}})
+        
+        # Fetch new balance for confirmation
+        updated_user = users_col.find_one({"user_id": target_user_id})
+        new_balance = updated_user.get("points", 0.0)
+
+        # 6. Notify Owner (Admin)
+        await event.reply(
+            f"✅ **Success!**\n\n"
+            f"User: `{target_arg}`\n"
+            f"Added: `{amount}` points\n"
+            f"New Balance: `{new_balance:.2f}`",
+            parse_mode="markdown"
+        )
+
+        # 7. Notify the User
+        try:
+            await bot.send_message(
+                target_user_id,
+                f"🎉 **Balance Update!**\n\n"
+                f"Admin has added **{amount} points** to your account.\n"
+                f"💰 Total Balance: **{new_balance:.2f} Points**",
+                parse_mode="html"
+            )
+        except Exception as e:
+            await event.reply(f"⚠️ Points added, but failed to DM user (User might have blocked bot): {e}")
+
+    except Exception as e:
+        logger.error(f"Error adding points: {e}")
+        await event.reply(f"❌ Database error: {e}")
+        
 # ================== HANDLERS ==================
 
 @bot.on(events.NewMessage(pattern=r"^/start"))
