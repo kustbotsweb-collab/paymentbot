@@ -10,7 +10,7 @@ from pymongo import MongoClient
 
 API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
-BOT_TOKEN = "8302453295:AAFLJEUx-JAa75jbtIDLw-JelzKOPWhPs-8"
+BOT_TOKEN = "8436171863:AAEdTIZAs00VsCM1E-2AvVKX4a93kek3sFw"
 
 SUPPORT_CHAT_LINK = "https://t.me/kustbotschat"
 UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
@@ -189,9 +189,10 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                             {"$inc": {"points": reward_points}}
                         )
                         try:
+                            # Emoji: 🎉
                             await bot.send_message(
                                 referrer_id,
-                                f"🎉 <b>Referral Bonus!</b>\n\n"
+                                f"<tg-emoji emoji-id='5208541126583136130'>🎉</tg-emoji> <b>Referral Bonus!</b>\n\n"
                                 f"Your referred user just purchased a plan.\n"
                                 f"You earned <b>{reward_points:.2f} points</b> (USDT value)."
                                 , parse_mode="html"
@@ -202,9 +203,10 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         logger.error(f"Error processing referral reward: {e}")
 
                 # Notify user
+                # Emoji: ✅
                 await bot.send_message(
                     user_id,
-                    f"✅ Payment confirmed!\n\n"
+                    f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Payment confirmed!\n\n"
                     f"Your <b>{product_name} - {plan_label}</b> subscription is activated.\n"
                     f"Stake Username: <code>@{username_clean}</code>\n"
                     f"Duration: <b>{hours} hours</b>.",
@@ -235,14 +237,16 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                 return True
 
             if status in ("expired", "cancelled", "cancel", "failed"):
-                await bot.send_message(user_id, f"❌ Invoice for {product_name} ({plan_label}) expired or cancelled.")
+                # Emoji: ❌
+                await bot.send_message(user_id, f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Invoice for {product_name} ({plan_label}) expired or cancelled.", parse_mode="html")
                 return False
 
         except Exception as e:
             logger.exception(f"Invoice query error for track {track_id}: {e}")
 
     # timeout reached
-    await bot.send_message(user_id, "⏳ Payment not confirmed. Create a new invoice.")
+    # Emoji: ⏳
+    await bot.send_message(user_id, "<tg-emoji emoji-id='4954254104604967967'>⏳</tg-emoji> Payment not confirmed. Create a new invoice.", parse_mode="html")
     return False
 
 # ================== RENAME / ACTIVE USERS API HELPERS ==================
@@ -365,8 +369,9 @@ async def check_active_users_loop():
                                     continue
 
                                 try:
+                                    # Emoji: ⏳
                                     rem_text = (
-                                        f"⏳ <b>Subscription ending soon</b>\n\n"
+                                        f"<tg-emoji emoji-id='4954254104604967967'>⏳</tg-emoji> <b>Subscription ending soon</b>\n\n"
                                         f"Product: <b>{api_name}</b>\n"
                                         f"User: <code>@{username_clean}</code>\n"
                                         f"Expires: {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
@@ -402,7 +407,8 @@ async def add_points_handler(event):
     # 2. Parse Arguments: /add <target> <amount>
     args = event.message.message.split()
     if len(args) != 3:
-        return await event.reply("❌ Usage: `/add <@username/userid> <amount>`", parse_mode="markdown")
+        # Markdown Emoji for ❌: ![❌](tg://emoji?id=5273914604752216432)
+        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Usage: `/add <@username/userid> <amount>`", parse_mode="markdown")
 
     target_arg = args[1]
     amount_arg = args[2]
@@ -411,7 +417,8 @@ async def add_points_handler(event):
     try:
         amount = float(amount_arg)
     except ValueError:
-        return await event.reply("❌ Invalid amount. Please enter a number.")
+        # Markdown Emoji for ❌
+        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Invalid amount. Please enter a number.", parse_mode="markdown")
 
     # 4. Find Target User in DB
     target_user_id = None
@@ -430,7 +437,8 @@ async def add_points_handler(event):
             target_user_id = user_record.get("user_id")
 
     if not user_record or not target_user_id:
-        return await event.reply(f"❌ User `{target_arg}` not found in the database.", parse_mode="markdown")
+        # Markdown Emoji for ❌
+        return await event.reply(f"![❌](tg://emoji?id=5273914604752216432) User `{target_arg}` not found in the database.", parse_mode="markdown")
 
     # 5. Update Database
     try:
@@ -441,22 +449,25 @@ async def add_points_handler(event):
         updated_user = users_col.find_one({"user_id": target_user_id})
         new_balance = updated_user.get("points", 0.0)
 
-        # 6. Notify Owner (Admin)
+        # 6. Notify Owner (Admin) - Markdown
+        # Emoji ✅: 5039793437776282663
         await event.reply(
-            f"✅ **Success!**\n\n"
+            f"![✅](tg://emoji?id=5039793437776282663) **Success!**\n\n"
             f"User: `{target_arg}`\n"
             f"Added: `{amount}` points\n"
             f"New Balance: `{new_balance:.2f}`",
             parse_mode="markdown"
         )
 
-        # 7. Notify the User
+        # 7. Notify the User - HTML
+        # Emoji 🎉: 5208541126583136130
+        # Emoji 💰: 5375312095346704820 (Money Bag)
         try:
             await bot.send_message(
                 target_user_id,
-                f"🎉 **Balance Update!**\n\n"
-                f"Admin has added **{amount} points** to your account.\n"
-                f"💰 Total Balance: **{new_balance:.2f} Points**",
+                f"<tg-emoji emoji-id='5208541126583136130'>🎉</tg-emoji> <b>Balance Update!</b>\n\n"
+                f"Admin has added <b>{amount} points</b> to your account.\n"
+                f"<tg-emoji emoji-id='5375312095346704820'>💰</tg-emoji> Total Balance: <b>{new_balance:.2f} Points</b>",
                 parse_mode="html"
             )
         except Exception as e:
@@ -464,7 +475,8 @@ async def add_points_handler(event):
 
     except Exception as e:
         logger.error(f"Error adding points: {e}")
-        await event.reply(f"❌ Database error: {e}")
+        # Markdown Emoji for ❌
+        await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
         
 # ================== HANDLERS ==================
 
@@ -514,9 +526,10 @@ async def start_handler(event):
             if ref_user:
                 new_user_doc["referrer_id"] = referrer_id
                 try:
+                    # Emoji: 🎉 (Replaced 🥳 with custom 🎉 as user didn't provide 🥳 ID)
                     await bot.send_message(
                         referrer_id, 
-                        f"🥳 <b>New Referral!</b>\n\n"
+                        f"<tg-emoji emoji-id='5208541126583136130'>🎉</tg-emoji> <b>New Referral!</b>\n\n"
                         f"A new user joined via your link.\n"
                         f"You will earn <b>10%</b> in points when they make a purchase.",
                         parse_mode="html"
@@ -531,8 +544,9 @@ async def start_handler(event):
             {"$set": {"last_seen": datetime.now(timezone.utc)}}
         )
 
+    # Emoji: 🚀 -> 5445284980978621387
     caption_text = (
-        "<b>🚀 Kust Bots — Premium Tools</b>\n\n"
+        "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
         "• Code Claimer (High-speed claiming)\n"
         "• Chat Farmer (Automated chat farming)\n\n"
@@ -590,13 +604,17 @@ async def referral_menu_handler(event):
          
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
     
+    # Emoji 🎁: 5411271889421086677
+    # Emoji 💰: 5375312095346704820 (Money Bag)
+    # Emoji 👥: 5453957997418004470
+    # Emoji 👇: 5442744585132464157
     text = (
-        "<b>🎁 Refer & Earn Program</b>\n\n"
+        "<b><tg-emoji emoji-id='5411271889421086677'>🎁</tg-emoji> Refer & Earn Program</b>\n\n"
         "Invite friends and earn <b>10%</b> of their spendings as points!\n"
         "1 Point = 1 USDT value.\n\n"
-        f"💰 <b>Your Balance:</b> {points:.2f} Points\n"
-        f"👥 <b>Total Referrals:</b> {ref_count}\n\n"
-        "👇 <b>Your Referral Link:</b>\n"
+        f"<tg-emoji emoji-id='5375312095346704820'>💰</tg-emoji> <b>Your Balance:</b> {points:.2f} Points\n"
+        f"<tg-emoji emoji-id='5453957997418004470'>👥</tg-emoji> <b>Total Referrals:</b> {ref_count}\n\n"
+        "<tg-emoji emoji-id='5442744585132464157'>👇</tg-emoji> <b>Your Referral Link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         "Share this link. You get notified instantly when someone joins."
     )
@@ -630,8 +648,9 @@ async def back_start_handler(event):
         Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
     ])
 
+    # Emoji: 🚀 -> 5445284980978621387
     caption_text = (
-        "<b>🚀 Kust Bots — Premium Tools</b>\n\n"
+        "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
         "• Code Claimer (High-speed claiming)\n"
         "• Chat Farmer (Automated chat farming)\n\n"
@@ -702,8 +721,9 @@ async def edit_username_handler(event):
     session["expecting_rename_old"] = True
     session["expecting_rename_new"] = False
     
+    # Emoji ✏️: 5395444784611480792
     text = (
-        "<b>✏️ Edit Username — Step 1</b>\n\n"
+        "<b><tg-emoji emoji-id='5395444784611480792'>✏️</tg-emoji> Edit Username — Step 1</b>\n\n"
         "Please enter the <b>OLD</b> Stake username (the one you want to replace).\n\n"
         "Example: <code>alice123</code>"
     )
@@ -738,8 +758,9 @@ async def username_handler(event):
         session["expecting_rename_new"] = True
         session["rename_old_value"] = username_clean
         
+        # Emoji ✅: 5039793437776282663
         await event.respond(
-            f"✅ Old Username identified: <code>@{username_clean}</code>\n\n"
+            f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Old Username identified: <code>@{username_clean}</code>\n\n"
             "<b>Step 2:</b> Now send the <b>NEW</b> Stake username.",
             parse_mode="html"
         )
@@ -757,14 +778,16 @@ async def username_handler(event):
              await event.respond("❌ Session expired or invalid state. Please try again from the menu.", parse_mode="html")
              return
 
-        await event.respond(f"🔄 Processing change from <code>@{old_username}</code> to <code>@{new_username}</code>...", parse_mode="html")
+        # Emoji 🔄: 5375338737028841420
+        await event.respond(f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> Processing change from <code>@{old_username}</code> to <code>@{new_username}</code>...", parse_mode="html")
 
         # Call API (Tries both servers)
         try:
             resp = await asyncio.to_thread(rename_user_api, old_username, new_username)
             
             if isinstance(resp, dict) and resp.get("ok") is False:
-                await event.respond(f"❌ Rename API reported failure: {resp}\n\nLocal username not changed.", parse_mode="html")
+                # Emoji ❌: 5273914604752216432
+                await event.respond(f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Rename API reported failure: {resp}\n\nLocal username not changed.", parse_mode="html")
                 return
 
             # Update DB references locally
@@ -783,11 +806,13 @@ async def username_handler(event):
             except Exception as e:
                 logger.exception("Failed to update DB entries after rename API success.")
             
-            await event.respond(f"✅ Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.", parse_mode="html")
+            # Emoji ✅: 5039793437776282663
+            await event.respond(f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.", parse_mode="html")
             
         except Exception as e:
             logger.exception("Rename process failed.")
-            await event.respond(f"❌ Error during rename: {e}", parse_mode="html")
+            # Emoji ❌: 5273914604752216432
+            await event.respond(f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Error during rename: {e}", parse_mode="html")
         
         return
 
@@ -887,8 +912,9 @@ async def confirm_yes_handler(event):
 @bot.on(events.CallbackQuery(data=b"buy_upi"))
 async def buy_upi_handler(event):
     await event.answer()
+    # Emoji 💵: 6325705628291436771
     text = (
-        "💵 <b>Buy with UPI</b>\n\n"
+        "<tg-emoji emoji-id='6325705628291436771'>💵</tg-emoji> <b>Buy with UPI</b>\n\n"
         "DM admin and mention your Stake username:\n"
         f"👉 <a href=\"{UPI_DM_LINK}\">@KustXoffical</a>"
     )
@@ -916,9 +942,10 @@ async def buy_crypto_handler(event):
     now = datetime.now(timezone.utc)
     is_weekend = now.weekday() in [5, 6]
 
+    # Emoji 💳: 6129870117619634982
     text = (
         f"{header}\n"
-        "💳 <b>Select a Plan</b>\n\n"
+        "<tg-emoji emoji-id='6129870117619634982'>💳</tg-emoji> <b>Select a Plan</b>\n\n"
         "Plans:\n"
     )
     
@@ -1007,12 +1034,14 @@ async def plan_handler(event):
     prod = session.get("product", "claimer")
     prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
 
+    # Emoji 🛒: 5226656353744862682
+    # Emoji 💰 (Alt/Gold): 6325444137797554944
     text = (
-        f"🛒 <b>Checkout: {prod_name}</b>\n\n"
+        f"<tg-emoji emoji-id='5226656353744862682'>🛒</tg-emoji> <b>Checkout: {prod_name}</b>\n\n"
         f"Plan: <b>{label}</b>\n"
         f"Cost: <b>{amount} USDT</b> (or Points)\n"
         f"Duration: <b>{hours} Hours</b>\n\n"
-        f"💰 Your Points: <b>{user_points:.2f}</b>\n\n"
+        f"<tg-emoji emoji-id='6325444137797554944'>💰</tg-emoji> Your Points: <b>{user_points:.2f}</b>\n\n"
         "Select payment method:"
     )
     
@@ -1062,7 +1091,8 @@ async def pay_points_handler(event):
     # Deduct Points
     users_col.update_one({"user_id": user_id}, {"$inc": {"points": -amount}})
     
-    await event.edit(f"🔄 Activating {prod_name} subscription...", parse_mode="html")
+    # Emoji 🔄: 5375338737028841420
+    await event.edit(f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> Activating {prod_name} subscription...", parse_mode="html")
     
     # Activate
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
@@ -1081,8 +1111,9 @@ async def pay_points_handler(event):
                 except: pass
             except: pass
             
+        # Emoji ✅: 5039793437776282663
         await event.edit(
-            f"✅ <b>Paid with Points!</b>\n\n"
+            f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Paid with Points!</b>\n\n"
             f"Your <b>{prod_name} - {label}</b> subscription is activated.\n"
             f"Deducted: <b>{amount} Points</b>\n"
             f"Remaining: <b>{user_points - amount:.2f} Points</b>\n"
@@ -1092,7 +1123,8 @@ async def pay_points_handler(event):
     else:
         # Refund on failure
         users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
-        await event.edit("❌ Activation failed. Points refunded. Contact support.", parse_mode="html")
+        # Emoji ❌: 5273914604752216432
+        await event.edit(f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Activation failed. Points refunded. Contact support.", parse_mode="html")
 
 @bot.on(events.CallbackQuery(data=b"pay_method_crypto"))
 async def pay_crypto_inv_handler(event):
@@ -1115,7 +1147,8 @@ async def pay_crypto_inv_handler(event):
         if not old.done():
             old.cancel()
 
-    await event.edit("🔄 Creating Invoice...", parse_mode="html")
+    # Emoji 🔄: 5375338737028841420
+    await event.edit(f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> Creating Invoice...", parse_mode="html")
 
     try:
         resp = await asyncio.to_thread(create_invoice, amount)
@@ -1145,9 +1178,10 @@ async def pay_crypto_inv_handler(event):
 
     session["track_id"] = track_id
     
+    # Emoji ✅: 5039793437776282663
     text = (
-        f"✅ Product: <b>{prod_name}</b>\n"
-        f"✅ Plan: <b>{label}</b>\n"
+        f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Product: <b>{prod_name}</b>\n"
+        f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Plan: <b>{label}</b>\n"
         f"Amount: <b>{amount} USDT</b>\n"
         f"Duration: <b>{hours} Hours</b>\n\n"
         "Click <b>Pay</b> to open OxaPay.\n"
@@ -1174,7 +1208,8 @@ async def pay_crypto_inv_handler(event):
 @bot.on(events.NewMessage(pattern=r"^/broadcast$"))
 async def broadcast_handler(event):
     if event.sender_id != BOT_OWNER_ID:
-        return await event.reply("❌ Unauthorized.")
+        # Markdown Emoji ❌
+        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Unauthorized.", parse_mode="markdown")
 
     if not event.is_reply:
         return await event.reply("Reply to a message with /broadcast.")
@@ -1205,7 +1240,8 @@ async def broadcast_handler(event):
         except Exception as e:
             logger.error(f"Broadcast fail to {uid}: {e}")
 
-    await event.reply(f"✅ Broadcast sent to {total} users.")
+    # Emoji ✅: 5039793437776282663 (HTML by default if no parse_mode specified, but works best with explicit tag)
+    await event.reply(f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Broadcast sent to {total} users.", parse_mode="html")
 
 # ================== MAIN ==================
 
