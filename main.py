@@ -54,9 +54,9 @@ REMINDER_THRESHOLD_MINUTES = 60   # notify when <= 60 minutes remain
 
 # Plans (Shared pricing for 2d+)
 PLANS_LONG_TERM = {
-    "2d":  {"label": "2 Days",     "amount": 4.5,  "hours": 48},
-    "4d":  {"label": "4 Days",     "amount": 8.0,  "hours": 96},
-    "7d":  {"label": "7 Days",     "amount": 12.5, "hours": 168},
+    "2d":  {"label": "2 Days",      "amount": 4.5,  "hours": 48},
+    "4d":  {"label": "4 Days",      "amount": 8.0,  "hours": 96},
+    "7d":  {"label": "7 Days",      "amount": 12.5, "hours": 168},
 }
 
 # 1 Day definitions (Product dependent)
@@ -67,9 +67,9 @@ PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.5, "hours": 24}
 
 # Plans (Exclusive to Chat Farmer Short Term)
 PLANS_FARMER_SHORT = {
-    "3h":  {"label": "3 Hours",    "amount": 0.5,  "hours": 3},
-    "6h":  {"label": "6 Hours",    "amount": 0.9,  "hours": 6},
-    "12h": {"label": "12 Hours",   "amount": 1.5,  "hours": 12},
+    "3h":  {"label": "3 Hours",     "amount": 0.5,  "hours": 3},
+    "6h":  {"label": "6 Hours",     "amount": 0.9,  "hours": 6},
+    "12h": {"label": "12 Hours",    "amount": 1.5,  "hours": 12},
 }
 
 PAYMENT_TIMEOUT = 15 * 60
@@ -388,7 +388,7 @@ async def check_active_users_loop():
                                         f"User: <code>@{username_clean}</code>\n"
                                         f"Expires: {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
                                         f"Time left: ~{int(minutes_left)} mins.\n\n"
-                                        "Renew now to avoid interruption."
+                                        f"Renew now to avoid interruption."
                                     )
                                     buttons = [
                                         [Button.inline("💳 Renew Now", b"buy_sub")],
@@ -566,25 +566,18 @@ async def start_handler(event):
     )
 
     buttons = []
-    
-    # --- SYMMETRICAL LAYOUT REDESIGN ---
-    # Row 1: Product Buy Buttons (Side by Side)
-    buttons.append([
-        Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer"),
-        Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")
-    ])
+    # Purchase buttons (Product Selection)
+    buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
+    buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
 
-    # Row 2: Management & Referrals (Side by Side)
+    # Account Actions Row
+    account_row = []
     if not first_time:
-        buttons.append([
-            Button.inline("✏️ Edit username", b"edit_username"),
-            Button.inline("🎁 Refer & Earn", b"menu_referral")
-        ])
-    else:
-        # If first time, just Refer & Earn in row 2 center
-        buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
+        account_row.append(Button.inline("✏️ Edit Username", b"edit_username"))
+    account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
+    buttons.append(account_row)
     
-    # Row 3: External Links (Side by Side)
+    # Info Row
     buttons.append([
         Button.url("🛠 Support", SUPPORT_CHAT_LINK),
         Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
@@ -657,26 +650,20 @@ async def back_start_handler(event):
         existing = users_col.find_one({"user_id": user_id})
     except:
         existing = None
-        
-    first_time = existing is None
 
     buttons = []
-    # Row 1: Products
-    buttons.append([
-        Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer"),
-        Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")
-    ])
+    # Purchase buttons
+    buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
+    buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
 
-    # Row 2: Management
-    if not first_time:
-        buttons.append([
-            Button.inline("✏️ Edit username", b"edit_username"),
-            Button.inline("🎁 Refer & Earn", b"menu_referral")
-        ])
-    else:
-        buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
-    
-    # Row 3: Support
+    # Account Actions Row
+    account_row = []
+    if existing:
+        account_row.append(Button.inline("✏️ Edit Username", b"edit_username"))
+    account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
+    buttons.append(account_row)
+
+    # Info Row
     buttons.append([
         Button.url("🛠 Support", SUPPORT_CHAT_LINK),
         Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
@@ -792,9 +779,6 @@ async def username_handler(event):
         session["expecting_rename_new"] = True
         session["rename_old_value"] = username_clean
         
-        # Stop propagation to prevent catch_all
-        event.stop_propagation()
-        
         # Emoji ✅: 5039793437776282663
         await event.respond(
             f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Old Username identified: <code>@{username_clean}</code>\n\n"
@@ -810,9 +794,6 @@ async def username_handler(event):
         
         session["expecting_rename_new"] = False
         session.pop("rename_old_value", None)
-        
-        # Stop propagation to prevent catch_all
-        event.stop_propagation()
         
         if not old_username:
              await event.respond("❌ Session expired or invalid state. Please try again from the menu.", parse_mode="html")
@@ -858,16 +839,16 @@ async def username_handler(event):
 
     # --- STANDARD PURCHASE FLOW ---
     if not session.get("expecting_username"):
-        # If regex matched but we are NOT expecting a username, we let it propagate to the catch-all
-        # which will show the start menu.
+        # If not expecting username, this handler shouldn't have been triggered by regex if we want to show start menu
+        # But regex handlers fire before generic ones. 
+        # We'll just call start_handler here if not expecting input.
+        await start_handler(event)
         return
 
-    # We are expecting a username, so handle it and STOP propagation
+    # Save as pending until user confirms
     session["pending_username"] = username_clean
     session["expecting_username"] = False
     
-    event.stop_propagation()
-
     # Determine product display name
     prod = session.get("product", "claimer")
     prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
@@ -1357,28 +1338,6 @@ async def broadcast_handler(event):
 
     # Emoji ✅: 5039793437776282663 (HTML by default if no parse_mode specified, but works best with explicit tag)
     await event.reply(f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Broadcast sent to {total} users.", parse_mode="html")
-
-# ================== CATCH ALL HANDLER ==================
-
-@bot.on(events.NewMessage(incoming=True))
-async def catch_all_handler(event):
-    # Ignore commands
-    if event.message.message.startswith("/"):
-        return
-        
-    user_id = event.sender_id
-    session = user_sessions.get(user_id)
-    
-    # Ignore if user is in an input state (Username input or Rename input)
-    if session and (
-        session.get("expecting_username") or 
-        session.get("expecting_rename_old") or 
-        session.get("expecting_rename_new")
-    ):
-        return
-    
-    # If not a command and not waiting for input, show start menu
-    await start_handler(event)
 
 # ================== MAIN ==================
 
