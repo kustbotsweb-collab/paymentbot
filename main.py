@@ -490,7 +490,7 @@ async def add_points_handler(event):
         # Markdown Emoji for ❌
         await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
         
-# ================== HANDLERS ==================
+# ================== START / MENU HANDLERS ==================
 
 @bot.on(events.NewMessage(pattern=r"^/start"))
 async def start_handler(event):
@@ -830,7 +830,11 @@ async def username_handler(event):
 
     # --- STANDARD PURCHASE FLOW ---
     if not session.get("expecting_username"):
-        return  # Ignore unrelated text
+        # If not expecting username, this handler shouldn't have been triggered by regex if we want to show start menu
+        # But regex handlers fire before generic ones. 
+        # We'll just call start_handler here if not expecting input.
+        await start_handler(event)
+        return
 
     # Save as pending until user confirms
     session["pending_username"] = username_clean
@@ -963,64 +967,81 @@ async def buy_crypto_handler(event):
     
     buttons = []
     
-    # --- CHAT FARMER EXCLUSIVE SHORT PLANS ---
     if prod == "farmer":
+        # --- CHAT FARMER PLANS ---
+        # 3h, 6h, 12h, 1d(24h), 2d, 4d, 7d
+        # Layout: Symmetrical
+        # Row 1: 3h, 6h
+        # Row 2: 12h, 1d
+        # Row 3: 2d, 4d
+        # Row 4: 7d
+        
         p3h = PLANS_FARMER_SHORT["3h"]
         p6h = PLANS_FARMER_SHORT["6h"]
         p12h = PLANS_FARMER_SHORT["12h"]
-        
+        p1d = PLAN_1D_FARMER
+        p2d = PLANS_LONG_TERM["2d"]
+        p4d = PLANS_LONG_TERM["4d"]
+        p7d = PLANS_LONG_TERM["7d"]
+
+        # Text listing
         text += f"• {p3h['label']:<8} — {p3h['amount']} USDT\n"
         text += f"• {p6h['label']:<8} — {p6h['amount']} USDT\n"
         text += f"• {p12h['label']:<8} — {p12h['amount']} USDT\n"
-        
+        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
+        text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
+        text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
+        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
+
         buttons.append([
-            Button.inline(f"3h — {p3h['amount']} USDT", b"plan_3h"),
-            Button.inline(f"6h — {p6h['amount']} USDT", b"plan_6h"),
+            Button.inline(f"3h — {p3h['amount']} $", b"plan_3h"),
+            Button.inline(f"6h — {p6h['amount']} $", b"plan_6h"),
         ])
         buttons.append([
-            Button.inline(f"12h — {p12h['amount']} USDT", b"plan_12h"),
+            Button.inline(f"12h — {p12h['amount']} $", b"plan_12h"),
+            Button.inline(f"1d — {p1d['amount']} $", b"plan_1d"),
         ])
-
-    # --- STANDARD PLANS (Vary by Product) ---
-    
-    # Determine which 1 Day plan to use
-    if prod == "farmer":
-        p1d = PLAN_1D_FARMER
-    else:
-        # Code Claimer uses the modified 12h plan
-        p1d = PLAN_1D_CLAIMER
-
-    # Row 1: Weekend Logic or Standard 1d
-    row1 = []
-    
-    if is_weekend:
-        # Weekend: Show both the Full Weekend Pass AND the Single Day option
-        text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
-        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
+        buttons.append([
+            Button.inline(f"2d — {p2d['amount']} $", b"plan_2d"),
+            Button.inline(f"4d — {p4d['amount']} $", b"plan_4d"),
+        ])
+        buttons.append([
+            Button.inline(f"7d — {p7d['amount']} $", b"plan_7d"),
+        ])
         
-        row1.append(Button.inline("Weekend Pass — 5.0 USDT", b"plan_weekend"))
-        row1.append(Button.inline(f"{p1d['label']} — {p1d['amount']} USDT", b"plan_1d"))
     else:
-        # Weekday: Standard 1 Day (or 12h for Claimer)
+        # --- CODE CLAIMER PLANS ---
+        # 12h(1d modified), 2d(48h), 4d, 7d (+ Weekend Pass if weekend)
+        
+        p1d = PLAN_1D_CLAIMER # 12 Hours
+        p2d = PLANS_LONG_TERM["2d"]
+        p4d = PLANS_LONG_TERM["4d"]
+        p7d = PLANS_LONG_TERM["7d"]
+        
+        # Override label for 2d to be explicitly "2 Days (48h)"
+        p2d_label_display = "2 Days (48h)"
+
+        if is_weekend:
+            text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
+            # Row 1: Weekend Pass
+            buttons.append([Button.inline("Weekend Pass — 5.0 $", b"plan_weekend")])
+
+        # Standard listings
         text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        row1.append(Button.inline(f"{p1d['label']} — {p1d['amount']} USDT", b"plan_1d"))
-    
-    buttons.append(row1)
+        text += f"• {p2d_label_display:<8} — {p2d['amount']} USDT\n"
+        text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
+        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
 
-    # Row 2: 2d, 4d
-    p2d = PLANS_LONG_TERM["2d"]
-    p4d = PLANS_LONG_TERM["4d"]
-    text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
-    text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
-    buttons.append([
-        Button.inline(f"2d — {p2d['amount']} USDT", b"plan_2d"),
-        Button.inline(f"4d — {p4d['amount']} USDT", b"plan_4d"),
-    ])
-
-    # Row 3: 7d
-    p7d = PLANS_LONG_TERM["7d"]
-    text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
-    buttons.append([Button.inline(f"7d — {p7d['amount']} USDT", b"plan_7d")])
+        # Row: 12h, 2d (48h)
+        buttons.append([
+            Button.inline(f"{p1d['label']} — {p1d['amount']} $", b"plan_1d"),
+            Button.inline(f"2d (48h) — {p2d['amount']} $", b"plan_2d"),
+        ])
+        # Row: 4d, 7d
+        buttons.append([
+            Button.inline(f"4d — {p4d['amount']} $", b"plan_4d"),
+            Button.inline(f"7d — {p7d['amount']} $", b"plan_7d"),
+        ])
 
     text += "\nSelect your plan:"
 
@@ -1083,6 +1104,8 @@ async def plan_handler(event):
             return await event.respond("Invalid plan. Try again.")
         amount = plan["amount"]
         label = plan["label"]
+        if prod == "claimer" and plan_key == "2d":
+            label = "2 Days (48h)"
         hours = plan["hours"]
 
     # Save selection to session
@@ -1306,6 +1329,28 @@ async def broadcast_handler(event):
 
     # Emoji ✅: 5039793437776282663 (HTML by default if no parse_mode specified, but works best with explicit tag)
     await event.reply(f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Broadcast sent to {total} users.", parse_mode="html")
+
+# ================== CATCH ALL HANDLER ==================
+
+@bot.on(events.NewMessage(incoming=True))
+async def catch_all_handler(event):
+    # Ignore commands
+    if event.message.message.startswith("/"):
+        return
+        
+    user_id = event.sender_id
+    session = user_sessions.get(user_id)
+    
+    # Ignore if user is in an input state (Username input or Rename input)
+    if session and (
+        session.get("expecting_username") or 
+        session.get("expecting_rename_old") or 
+        session.get("expecting_rename_new")
+    ):
+        return
+    
+    # If not a command and not waiting for input, show start menu
+    await start_handler(event)
 
 # ================== MAIN ==================
 
