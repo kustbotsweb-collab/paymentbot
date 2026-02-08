@@ -566,15 +566,25 @@ async def start_handler(event):
     )
 
     buttons = []
-    # Purchase buttons (Product Selection)
-    buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
-    buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
+    
+    # --- SYMMETRICAL LAYOUT REDESIGN ---
+    # Row 1: Product Buy Buttons (Side by Side)
+    buttons.append([
+        Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer"),
+        Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")
+    ])
 
+    # Row 2: Management & Referrals (Side by Side)
     if not first_time:
-        buttons.append([Button.inline("✏️ Edit username", b"edit_username")])
+        buttons.append([
+            Button.inline("✏️ Edit username", b"edit_username"),
+            Button.inline("🎁 Refer & Earn", b"menu_referral")
+        ])
+    else:
+        # If first time, just Refer & Earn in row 2 center
+        buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
     
-    buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
-    
+    # Row 3: External Links (Side by Side)
     buttons.append([
         Button.url("🛠 Support", SUPPORT_CHAT_LINK),
         Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
@@ -647,14 +657,26 @@ async def back_start_handler(event):
         existing = users_col.find_one({"user_id": user_id})
     except:
         existing = None
+        
+    first_time = existing is None
 
     buttons = []
-    buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
-    buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
+    # Row 1: Products
+    buttons.append([
+        Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer"),
+        Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")
+    ])
 
-    if existing:
-        buttons.append([Button.inline("✏️ Edit username", b"edit_username")])
-    buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
+    # Row 2: Management
+    if not first_time:
+        buttons.append([
+            Button.inline("✏️ Edit username", b"edit_username"),
+            Button.inline("🎁 Refer & Earn", b"menu_referral")
+        ])
+    else:
+        buttons.append([Button.inline("🎁 Refer & Earn", b"menu_referral")])
+    
+    # Row 3: Support
     buttons.append([
         Button.url("🛠 Support", SUPPORT_CHAT_LINK),
         Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
@@ -770,6 +792,9 @@ async def username_handler(event):
         session["expecting_rename_new"] = True
         session["rename_old_value"] = username_clean
         
+        # Stop propagation to prevent catch_all
+        event.stop_propagation()
+        
         # Emoji ✅: 5039793437776282663
         await event.respond(
             f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Old Username identified: <code>@{username_clean}</code>\n\n"
@@ -785,6 +810,9 @@ async def username_handler(event):
         
         session["expecting_rename_new"] = False
         session.pop("rename_old_value", None)
+        
+        # Stop propagation to prevent catch_all
+        event.stop_propagation()
         
         if not old_username:
              await event.respond("❌ Session expired or invalid state. Please try again from the menu.", parse_mode="html")
@@ -830,16 +858,16 @@ async def username_handler(event):
 
     # --- STANDARD PURCHASE FLOW ---
     if not session.get("expecting_username"):
-        # If not expecting username, this handler shouldn't have been triggered by regex if we want to show start menu
-        # But regex handlers fire before generic ones. 
-        # We'll just call start_handler here if not expecting input.
-        await start_handler(event)
+        # If regex matched but we are NOT expecting a username, we let it propagate to the catch-all
+        # which will show the start menu.
         return
 
-    # Save as pending until user confirms
+    # We are expecting a username, so handle it and STOP propagation
     session["pending_username"] = username_clean
     session["expecting_username"] = False
     
+    event.stop_propagation()
+
     # Determine product display name
     prod = session.get("product", "claimer")
     prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
