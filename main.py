@@ -52,12 +52,24 @@ REMINDER_THRESHOLD_MINUTES = 60   # notify when <= 60 minutes remain
 
 # --- PRICING PLANS ---
 
-# Plans (Shared pricing for both)
-PLANS_COMMON = {
-    "1d":  {"label": "1 Day",      "amount": 2.5,  "hours": 24},
+# Plans (Shared pricing for 2d+)
+PLANS_LONG_TERM = {
     "2d":  {"label": "2 Days",     "amount": 4.5,  "hours": 48},
     "4d":  {"label": "4 Days",     "amount": 8.0,  "hours": 96},
     "7d":  {"label": "7 Days",     "amount": 12.5, "hours": 168},
+}
+
+# 1 Day definitions (Product dependent)
+# Code Claimer "1 Day" is now 12 Hours
+PLAN_1D_CLAIMER = {"label": "12 Hours", "amount": 2.5, "hours": 12}
+# Chat Farmer "1 Day" remains 24 Hours
+PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.5, "hours": 24}
+
+# Plans (Exclusive to Chat Farmer Short Term)
+PLANS_FARMER_SHORT = {
+    "3h":  {"label": "3 Hours",    "amount": 0.5,  "hours": 3},
+    "6h":  {"label": "6 Hours",    "amount": 0.9,  "hours": 6},
+    "12h": {"label": "12 Hours",   "amount": 1.5,  "hours": 12},
 }
 
 PAYMENT_TIMEOUT = 15 * 60
@@ -951,21 +963,53 @@ async def buy_crypto_handler(event):
     
     buttons = []
     
-    # Row 1: 1 Day OR Weekend Pass
-    row1 = []
-    if is_weekend:
-        text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
-        row1.append(Button.inline("Weekend Pass — 5.0 USDT", b"plan_weekend"))
+    # --- CHAT FARMER EXCLUSIVE SHORT PLANS ---
+    if prod == "farmer":
+        p3h = PLANS_FARMER_SHORT["3h"]
+        p6h = PLANS_FARMER_SHORT["6h"]
+        p12h = PLANS_FARMER_SHORT["12h"]
+        
+        text += f"• {p3h['label']:<8} — {p3h['amount']} USDT\n"
+        text += f"• {p6h['label']:<8} — {p6h['amount']} USDT\n"
+        text += f"• {p12h['label']:<8} — {p12h['amount']} USDT\n"
+        
+        buttons.append([
+            Button.inline(f"3h — {p3h['amount']} USDT", b"plan_3h"),
+            Button.inline(f"6h — {p6h['amount']} USDT", b"plan_6h"),
+        ])
+        buttons.append([
+            Button.inline(f"12h — {p12h['amount']} USDT", b"plan_12h"),
+        ])
+
+    # --- STANDARD PLANS (Vary by Product) ---
+    
+    # Determine which 1 Day plan to use
+    if prod == "farmer":
+        p1d = PLAN_1D_FARMER
     else:
-        p1d = PLANS_COMMON["1d"]
+        # Code Claimer uses the modified 12h plan
+        p1d = PLAN_1D_CLAIMER
+
+    # Row 1: Weekend Logic or Standard 1d
+    row1 = []
+    
+    if is_weekend:
+        # Weekend: Show both the Full Weekend Pass AND the Single Day option
+        text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
         text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        row1.append(Button.inline(f"1d — {p1d['amount']} USDT", b"plan_1d"))
+        
+        row1.append(Button.inline("Weekend Pass — 5.0 USDT", b"plan_weekend"))
+        row1.append(Button.inline(f"{p1d['label']} — {p1d['amount']} USDT", b"plan_1d"))
+    else:
+        # Weekday: Standard 1 Day (or 12h for Claimer)
+        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
+        row1.append(Button.inline(f"{p1d['label']} — {p1d['amount']} USDT", b"plan_1d"))
     
     buttons.append(row1)
 
     # Row 2: 2d, 4d
-    p2d = PLANS_COMMON["2d"]
-    p4d = PLANS_COMMON["4d"]
+    p2d = PLANS_LONG_TERM["2d"]
+    p4d = PLANS_LONG_TERM["4d"]
     text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
     text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
     buttons.append([
@@ -974,7 +1018,7 @@ async def buy_crypto_handler(event):
     ])
 
     # Row 3: 7d
-    p7d = PLANS_COMMON["7d"]
+    p7d = PLANS_LONG_TERM["7d"]
     text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
     buttons.append([Button.inline(f"7d — {p7d['amount']} USDT", b"plan_7d")])
 
@@ -996,6 +1040,9 @@ async def plan_handler(event):
 
     plan_key = event.data.decode().split("_", 1)[1]
     
+    # Check Product
+    prod = session.get("product", "claimer")
+
     # Handle Special Weekend Plan
     if plan_key == "weekend":
         now = datetime.now(timezone.utc)
@@ -1011,9 +1058,27 @@ async def plan_handler(event):
             
         amount = 5.0
         label = "Weekend Pass"
+        
+    elif plan_key == "1d":
+        # Handle 1d Plan (Split logic)
+        if prod == "farmer":
+            plan = PLAN_1D_FARMER
+        else:
+            plan = PLAN_1D_CLAIMER
+        amount = plan["amount"]
+        label = plan["label"]
+        hours = plan["hours"]
+        
+    elif plan_key in PLANS_FARMER_SHORT:
+        # Farmer specific short plans
+        plan = PLANS_FARMER_SHORT[plan_key]
+        amount = plan["amount"]
+        label = plan["label"]
+        hours = plan["hours"]
+        
     else:
-        # Standard Plans
-        plan = PLANS_COMMON.get(plan_key)
+        # Standard Long Term Plans (2d, 4d, 7d)
+        plan = PLANS_LONG_TERM.get(plan_key)
         if not plan:
             return await event.respond("Invalid plan. Try again.")
         amount = plan["amount"]
@@ -1031,7 +1096,6 @@ async def plan_handler(event):
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
     
-    prod = session.get("product", "claimer")
     prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
 
     # Emoji 🛒: 5226656353744862682
