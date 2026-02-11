@@ -845,11 +845,15 @@ async def terminate_sub_menu_handler(event):
                             break
     
     if not active_details:
-        # User exists in DB but not active in API -> Just delete from DB
+        # Enable manual input for old username
+        session = user_sessions.setdefault(user_id, {})
+        session["expecting_term_username"] = True
+        
         text = (
             f"User: <code>@{username}</code>\n\n"
-            "❌ <b>No active subscription found.</b>\n"
-            "You can still remove this username from your bot account."
+            "❌ <b>No active subscription found for this username.</b>\n\n"
+            "If you have a subscription under an <b>OLD username</b>, please <b>send it now</b> to terminate it and get a refund.\n\n"
+            "Or click below to just remove the current username from the database."
         )
         buttons = [
             [Button.inline("🗑 Remove Username Only", b"terminate_sub_force_db")],
@@ -934,14 +938,17 @@ async def terminate_execute_handler(event):
     success = await asyncio.to_thread(delete_user_api, username, api_url)
     
     if success:
-        # Update DB
-        users_col.update_one(
-            {"user_id": user_id}, 
-            {
-                "$inc": {"points": refund},
-                "$unset": {"username": ""}
-            }
-        )
+        # Check if the terminated username matches the user's current DB username
+        user_doc = users_col.find_one({"user_id": user_id})
+        current_db_user = user_doc.get("username", "").lstrip("@") if user_doc else ""
+        
+        update_query = {"$inc": {"points": refund}}
+        
+        # Only remove username from DB if it matches the one we just terminated
+        if current_db_user.lower() == username.lower().lstrip("@"):
+             update_query["$unset"] = {"username": ""}
+             
+        users_col.update_one({"user_id": user_id}, update_query)
         
         # Emoji ✅
         await event.edit(
@@ -972,6 +979,90 @@ async def username_handler(event):
 
     raw_username = event.raw_text.strip()
     username_clean = raw_username.lstrip('@')
+
+    # --- TERMINATE OLD USERNAME FLOW ---
+    if session.get("expecting_term_username"):
+        session["expecting_term_username"] = False
+        target_username = username_clean
+        
+        # Search for active subscription in both APIs (Manual Search)
+        active_details = None
+        
+        # Check Claimer
+        data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
+        if data_claimer:
+            users = data_claimer.get("active_users", [])
+            if isinstance(users, list):
+                for u in users:
+                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                        expires = _parse_iso_datetime(u.get("expires"))
+                        if expires:
+                            active_details = (CLAIMER_API_URL, expires, "Code Claimer")
+                            break
+
+        # Check Farmer
+        if not active_details:
+            data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
+            if data_farmer:
+                users = data_farmer.get("active_users", [])
+                if isinstance(users, list):
+                    for u in users:
+                        if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                            expires = _parse_iso_datetime(u.get("expires"))
+                            if expires:
+                                active_details = (FARMER_API_URL, expires, "Chat Farmer")
+                                break
+        
+        if not active_details:
+            await event.respond(
+                f"❌ No active subscription found for <code>@{target_username}</code> either.",
+                parse_mode="html",
+                buttons=[[Button.inline("🔙 Back", b"back_to_start")]]
+            )
+            return
+
+        # Calculate Refund
+        api_url, expires_dt, product_name = active_details
+        now = datetime.now(timezone.utc)
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+            
+        if expires_dt > now:
+            remaining_secs = (expires_dt - now).total_seconds()
+            remaining_hours = remaining_secs / 3600.0
+        else:
+            remaining_hours = 0
+            
+        refund_amount = 0.0
+        if remaining_hours > 0:
+            if product_name == "Code Claimer":
+                refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
+            else:
+                refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
+                
+        refund_amount = round(refund_amount, 2)
+        
+        session["term_username"] = target_username
+        session["term_api"] = api_url
+        session["term_refund"] = refund_amount
+        session["term_product"] = product_name
+        
+        text = (
+            f"<b>🗑 Terminate Subscription (Old Username)</b>\n\n"
+            f"Product: <b>{product_name}</b>\n"
+            f"User: <code>@{target_username}</code>\n"
+            f"Time Left: <b>{remaining_hours:.1f} Hours</b>\n\n"
+            f"<b>Refund Estimate:</b> {refund_amount} Points\n"
+            "<i>(Based on remaining time)</i>\n\n"
+            "Are you sure? This will instantly stop the bot."
+        )
+        
+        buttons = [
+            [Button.inline(f"✅ Yes, Refund {refund_amount} Pts", b"terminate_sub_execute")],
+            [Button.inline("❌ Cancel", b"back_to_start")]
+        ]
+        await event.respond(text, parse_mode="html", buttons=buttons)
+        return
 
     # --- RENAME FLOW STEP 1: CAPTURE OLD USERNAME ---
     if session.get("expecting_rename_old"):
