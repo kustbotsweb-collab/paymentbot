@@ -10,7 +10,7 @@ from pymongo import MongoClient
 
 API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
-BOT_TOKEN = "8302453295:AAFLJEUx-JAa75jbtIDLw-JelzKOPWhPs-8"
+BOT_TOKEN = "8109500973:AAFBs3zktRt5KCB-jkmOnJwxGmNZ3jJwHGc"
 
 SUPPORT_CHAT_LINK = "https://t.me/kustbotschat"
 UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
