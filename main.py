@@ -63,13 +63,13 @@ PLANS_LONG_TERM = {
 # Code Claimer "1 Day" is now 12 Hours
 PLAN_1D_CLAIMER = {"label": "12 Hours", "amount": 2.5, "hours": 12}
 # Chat Farmer "1 Day" remains 24 Hours
-PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.3, "hours": 24}
+PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.2, "hours": 24}
 
 # Plans (Exclusive to Chat Farmer Short Term)
 PLANS_FARMER_SHORT = {
-    "3h":  {"label": "3 Hours",     "amount": 0.4,  "hours": 3},
-    "6h":  {"label": "6 Hours",     "amount": 0.8,  "hours": 6},
-    "12h": {"label": "12 Hours",    "amount": 1.3,  "hours": 12},
+    "3h":  {"label": "3 Hours",     "amount": 0.3,  "hours": 3},
+    "6h":  {"label": "6 Hours",     "amount": 0.7,  "hours": 6},
+    "12h": {"label": "12 Hours",    "amount": 1.1,  "hours": 12},
 }
 
 PAYMENT_TIMEOUT = 15 * 60
