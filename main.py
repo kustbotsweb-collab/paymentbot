@@ -10,7 +10,7 @@ from pymongo import MongoClient
 
 API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
-BOT_TOKEN = "8109500973:AAFBs3zktRt5KCB-jkmOnJwxGmNZ3jJwHGc"
+BOT_TOKEN = "8302453295:AAFLJEUx-JAa75jbtIDLw-JelzKOPWhPs-8"
 
 SUPPORT_CHAT_LINK = "https://t.me/kustbotschat"
 UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
@@ -71,6 +71,12 @@ PLANS_FARMER_SHORT = {
     "6h":  {"label": "6 Hours",     "amount": 0.7,  "hours": 6},
     "12h": {"label": "12 Hours",    "amount": 1.1,  "hours": 12},
 }
+
+# --- REFUND CONFIGURATION ---
+# Refund amounts per hour remaining. 
+# Set conservatively to prevent "Plan Arbitrage" (buying cheap long plans and refunding at expensive short rates).
+REFUND_RATE_CLAIMER_PER_HOUR = 0.15 # Approx $0.15 per hour
+REFUND_RATE_FARMER_PER_HOUR = 0.08  # Approx $0.08 per hour
 
 PAYMENT_TIMEOUT = 15 * 60
 POLL_INTERVAL = 10
@@ -261,7 +267,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
     await bot.send_message(user_id, "<tg-emoji emoji-id='4954254104604967967'>⏳</tg-emoji> Payment not confirmed. Create a new invoice.", parse_mode="html")
     return False
 
-# ================== RENAME / ACTIVE USERS API HELPERS ==================
+# ================== API MANAGEMENT HELPERS ==================
 
 def get_active_users(api_url):
     """
@@ -311,6 +317,31 @@ def rename_user_api(old_username: str, new_username: str):
         return {"ok": True}
     else:
         return {"ok": False, "error": details}
+
+def delete_user_api(username: str, api_url: str):
+    """
+    Deletes the user from the specified API using GET or POST /delete_user.
+    """
+    if username and not username.startswith("@"):
+        username = f"@{username}"
+    
+    params = {"user": username, "admin": "admin1234"}
+    
+    try:
+        # Trying POST
+        r = requests.post(f"{api_url}/delete_user", params=params, timeout=10)
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Failed delete_user POST on {api_url}: {e}")
+        try:
+            # Fallback to GET
+            r = requests.get(f"{api_url}/delete_user", params=params, timeout=10)
+            r.raise_for_status()
+            return True
+        except Exception as e2:
+             logger.error(f"Failed delete_user GET on {api_url}: {e2}")
+    return False
 
 # ================== ACTIVE USERS CHECKER (background) ==================
 
@@ -577,6 +608,10 @@ async def start_handler(event):
     account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
     buttons.append(account_row)
     
+    # Termination Row
+    if not first_time:
+        buttons.append([Button.inline("🗑 Terminate Sub", b"terminate_sub_menu")])
+
     # Info Row
     buttons.append([
         Button.url("🛠 Support", SUPPORT_CHAT_LINK),
@@ -662,6 +697,10 @@ async def back_start_handler(event):
         account_row.append(Button.inline("✏️ Edit Username", b"edit_username"))
     account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
     buttons.append(account_row)
+    
+    # Termination Row
+    if existing:
+        buttons.append([Button.inline("🗑 Terminate Sub", b"terminate_sub_menu")])
 
     # Info Row
     buttons.append([
@@ -763,6 +802,174 @@ async def edit_cancel_handler(event):
     session.pop("rename_old_value", None)
     await event.edit("Edit cancelled.", parse_mode="html")
 
+# ================== TERMINATE SUBSCRIPTION HANDLER ==================
+
+@bot.on(events.CallbackQuery(data=b"terminate_sub_menu"))
+async def terminate_sub_menu_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    
+    user_doc = users_col.find_one({"user_id": user_id})
+    if not user_doc or not user_doc.get("username"):
+        await event.edit("❌ No username linked to your account. Cannot terminate.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
+        return
+
+    username = user_doc.get("username").lstrip("@")
+    
+    # Search for active subscription in both APIs
+    active_details = None # (api_url, expires_dt, product_type)
+    
+    # Check Claimer
+    data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
+    if data_claimer:
+        users = data_claimer.get("active_users", [])
+        if isinstance(users, list):
+            for u in users:
+                if u.get("username", "").lower().lstrip("@") == username.lower():
+                    expires = _parse_iso_datetime(u.get("expires"))
+                    if expires:
+                        active_details = (CLAIMER_API_URL, expires, "Code Claimer")
+                        break
+
+    # Check Farmer (if not found in Claimer)
+    if not active_details:
+        data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
+        if data_farmer:
+            users = data_farmer.get("active_users", [])
+            if isinstance(users, list):
+                for u in users:
+                    if u.get("username", "").lower().lstrip("@") == username.lower():
+                        expires = _parse_iso_datetime(u.get("expires"))
+                        if expires:
+                            active_details = (FARMER_API_URL, expires, "Chat Farmer")
+                            break
+    
+    if not active_details:
+        # Enable manual input for old username
+        session = user_sessions.setdefault(user_id, {})
+        session["expecting_term_username"] = True
+        
+        text = (
+            f"User: <code>@{username}</code>\n\n"
+            "❌ <b>No active subscription found for this username.</b>\n\n"
+            "If you have a subscription under an <b>OLD username</b>, please <b>send it now</b> to terminate it and get a refund.\n\n"
+            "Or click below to just remove the current username from the database."
+        )
+        buttons = [
+            [Button.inline("🗑 Remove Username Only", b"terminate_sub_force_db")],
+            [Button.inline("🔙 Back", b"back_to_start")]
+        ]
+        await event.edit(text, parse_mode="html", buttons=buttons)
+        return
+
+    # User is active -> Calculate Refund
+    api_url, expires_dt, product_name = active_details
+    now = datetime.now(timezone.utc)
+    if expires_dt.tzinfo is None:
+        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+        
+    if expires_dt > now:
+        remaining_secs = (expires_dt - now).total_seconds()
+        remaining_hours = remaining_secs / 3600.0
+    else:
+        remaining_hours = 0
+        
+    refund_amount = 0.0
+    if remaining_hours > 0:
+        if product_name == "Code Claimer":
+            refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
+        else:
+            refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
+            
+    # Format
+    refund_amount = round(refund_amount, 2)
+    
+    # Store in session for execution
+    session = user_sessions.setdefault(user_id, {})
+    session["term_username"] = username
+    session["term_api"] = api_url
+    session["term_refund"] = refund_amount
+    session["term_product"] = product_name
+    
+    # Emoji ⚠️: 5240241223632984914
+    text = (
+        f"<b>🗑 Terminate Subscription</b>\n\n"
+        f"Product: <b>{product_name}</b>\n"
+        f"User: <code>@{username}</code>\n"
+        f"Time Left: <b>{remaining_hours:.1f} Hours</b>\n\n"
+        f"<b>Refund Estimate:</b> {refund_amount} Points\n"
+        "<i>(Based on remaining time)</i>\n\n"
+        "Are you sure? This will instantly stop the bot and remove your username."
+    )
+    
+    buttons = [
+        [Button.inline(f"✅ Yes, Refund {refund_amount} Pts", b"terminate_sub_execute")],
+        [Button.inline("❌ Cancel", b"back_to_start")]
+    ]
+    await event.edit(text, parse_mode="html", buttons=buttons)
+
+@bot.on(events.CallbackQuery(data=b"terminate_sub_force_db"))
+async def terminate_force_db_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    
+    # Just remove from DB
+    users_col.update_one({"user_id": user_id}, {"$unset": {"username": ""}})
+    
+    await event.edit("✅ Username removed from database.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
+
+@bot.on(events.CallbackQuery(data=b"terminate_sub_execute"))
+async def terminate_execute_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    session = user_sessions.get(user_id, {})
+    
+    username = session.get("term_username")
+    api_url = session.get("term_api")
+    refund = session.get("term_refund", 0.0)
+    
+    if not username or not api_url:
+        await event.edit("Session expired. Please try again.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
+        return
+        
+    # Execute Delete on API
+    await event.edit("⏳ Deleting user from server...", parse_mode="html")
+    
+    success = await asyncio.to_thread(delete_user_api, username, api_url)
+    
+    if success:
+        # Check if the terminated username matches the user's current DB username
+        user_doc = users_col.find_one({"user_id": user_id})
+        current_db_user = user_doc.get("username", "").lstrip("@") if user_doc else ""
+        
+        update_query = {"$inc": {"points": refund}}
+        
+        # Only remove username from DB if it matches the one we just terminated
+        if current_db_user.lower() == username.lower().lstrip("@"):
+             update_query["$unset"] = {"username": ""}
+             
+        users_col.update_one({"user_id": user_id}, update_query)
+        
+        # Emoji ✅
+        await event.edit(
+            f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Subscription Terminated</b>\n\n"
+            f"User <code>@{username}</code> deleted.\n"
+            f"Refunded: <b>{refund} Points</b>.",
+            parse_mode="html",
+            buttons=[[Button.inline("🔙 Main Menu", b"back_to_start")]]
+        )
+    else:
+        # Failed
+        await event.edit(
+            "❌ Failed to delete user from server. Please contact support.",
+            buttons=[[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
+        )
+        
+    # Clean session
+    session.pop("term_username", None)
+    session.pop("term_api", None)
+    session.pop("term_refund", None)
+
 # ================== TEXT INPUT HANDLER ==================
 
 @bot.on(events.NewMessage(pattern=r"^[A-Za-z0-9_@]{3,51}$"))
@@ -772,6 +979,90 @@ async def username_handler(event):
 
     raw_username = event.raw_text.strip()
     username_clean = raw_username.lstrip('@')
+
+    # --- TERMINATE OLD USERNAME FLOW ---
+    if session.get("expecting_term_username"):
+        session["expecting_term_username"] = False
+        target_username = username_clean
+        
+        # Search for active subscription in both APIs (Manual Search)
+        active_details = None
+        
+        # Check Claimer
+        data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
+        if data_claimer:
+            users = data_claimer.get("active_users", [])
+            if isinstance(users, list):
+                for u in users:
+                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                        expires = _parse_iso_datetime(u.get("expires"))
+                        if expires:
+                            active_details = (CLAIMER_API_URL, expires, "Code Claimer")
+                            break
+
+        # Check Farmer
+        if not active_details:
+            data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
+            if data_farmer:
+                users = data_farmer.get("active_users", [])
+                if isinstance(users, list):
+                    for u in users:
+                        if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                            expires = _parse_iso_datetime(u.get("expires"))
+                            if expires:
+                                active_details = (FARMER_API_URL, expires, "Chat Farmer")
+                                break
+        
+        if not active_details:
+            await event.respond(
+                f"❌ No active subscription found for <code>@{target_username}</code> either.",
+                parse_mode="html",
+                buttons=[[Button.inline("🔙 Back", b"back_to_start")]]
+            )
+            return
+
+        # Calculate Refund
+        api_url, expires_dt, product_name = active_details
+        now = datetime.now(timezone.utc)
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+            
+        if expires_dt > now:
+            remaining_secs = (expires_dt - now).total_seconds()
+            remaining_hours = remaining_secs / 3600.0
+        else:
+            remaining_hours = 0
+            
+        refund_amount = 0.0
+        if remaining_hours > 0:
+            if product_name == "Code Claimer":
+                refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
+            else:
+                refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
+                
+        refund_amount = round(refund_amount, 2)
+        
+        session["term_username"] = target_username
+        session["term_api"] = api_url
+        session["term_refund"] = refund_amount
+        session["term_product"] = product_name
+        
+        text = (
+            f"<b>🗑 Terminate Subscription (Old Username)</b>\n\n"
+            f"Product: <b>{product_name}</b>\n"
+            f"User: <code>@{target_username}</code>\n"
+            f"Time Left: <b>{remaining_hours:.1f} Hours</b>\n\n"
+            f"<b>Refund Estimate:</b> {refund_amount} Points\n"
+            "<i>(Based on remaining time)</i>\n\n"
+            "Are you sure? This will instantly stop the bot."
+        )
+        
+        buttons = [
+            [Button.inline(f"✅ Yes, Refund {refund_amount} Pts", b"terminate_sub_execute")],
+            [Button.inline("❌ Cancel", b"back_to_start")]
+        ]
+        await event.respond(text, parse_mode="html", buttons=buttons)
+        return
 
     # --- RENAME FLOW STEP 1: CAPTURE OLD USERNAME ---
     if session.get("expecting_rename_old"):
