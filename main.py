@@ -325,7 +325,7 @@ def delete_user_api(username: str, api_url: str):
     if username and not username.startswith("@"):
         username = f"@{username}"
     
-    params = {"user": username, "admin": "admin1234"}
+    params = {"username": username, "admin": "admin1234"}
     
     try:
         # Trying POST
