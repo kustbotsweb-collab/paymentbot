@@ -59,7 +59,7 @@ deployed_apps_col = db["deployed_apps"]
 BOT_OWNER_ID = 7618467489
 
 # OxaPay API
-OXAPAY_API_KEY = "SNJEE3-MOEI0B-WR0FW4-UWSLXH"
+OXAPAY_API_KEY = "SNJEE3-MOEI0B-ZR0FW4-UWSLXH"
 OXAPAY_API_BASE = "https://api.oxapay.com"
 
 # Active users checker settings
