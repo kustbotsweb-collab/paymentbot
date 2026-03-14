@@ -2,6 +2,8 @@ import asyncio
 import logging
 import time
 import requests
+import random
+import string
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button, functions, types
 from pymongo import MongoClient
@@ -30,6 +32,16 @@ FARMER_FORWARD_1 = ("kustvault", 2)
 FARMER_FORWARD_2 = ("kustvault", 3)
 FARMER_FORWARD_3 = ("kustvault", 4)
 
+# --- API Claimer Assets ---
+API_CLAIMER_AUTH_URL = "https://code-auth-432b14a97f21.herokuapp.com"  # Same as Code Claimer auth
+API_CLAIMER_DEPLOY_URL = "https://claimer-deploy-da60199619e8.herokuapp.com"  # CHANGE THIS to your deploy server URL
+API_CLAIMER_AUTH_TOKEN = "fuck1234"  # CHANGE THIS to your deploy API auth token
+API_CLAIMER_REGION = "eu"  # Deploy region
+# Forwards for API Claimer (Using same vault, change if needed)
+API_CLAIMER_FORWARD_1 = ("kustvault", 8)
+API_CLAIMER_FORWARD_2 = ("kustvault", 9)
+API_CLAIMER_FORWARD_3 = ("kustvault", 10)
+
 # Start image
 START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c14bc87a40b4b6a9973"
 
@@ -38,6 +50,9 @@ MONGO_URL = "mongodb+srv://kustbotsweb_db_user:z7YqNFmFOvVHKl4B@kust-payments.hi
 mongo = MongoClient(MONGO_URL)
 db = mongo["kustfarm"]
 users_col = db["users"]
+
+# Track deployed app names to avoid conflicts
+deployed_apps_col = db["deployed_apps"]
 
 # Bot owner
 BOT_OWNER_ID = 7618467489
@@ -64,6 +79,8 @@ PLANS_LONG_TERM = {
 PLAN_1D_CLAIMER = {"label": "12 Hours", "amount": 2.5, "hours": 12}
 # Chat Farmer "1 Day" remains 24 Hours
 PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.5, "hours": 24}
+# API Claimer "1 Day" is 24 Hours
+PLAN_1D_API_CLAIMER = {"label": "1 Day", "amount": 3.0, "hours": 24}
 
 # Plans (Exclusive to Chat Farmer Short Term)
 PLANS_FARMER_SHORT = {
@@ -72,11 +89,21 @@ PLANS_FARMER_SHORT = {
     "12h": {"label": "12 Hours",    "amount": 1.5,  "hours": 12},
 }
 
+# Plans (Exclusive to API Claimer)
+PLANS_API_CLAIMER = {
+    "1d":  {"label": "1 Day",    "amount": 3.0,  "hours": 24},
+    "3d":  {"label": "3 Days",   "amount": 7.5,  "hours": 72},
+    "7d":  {"label": "7 Days",   "amount": 14.0, "hours": 168},
+    "14d": {"label": "14 Days",  "amount": 24.0, "hours": 336},
+    "30d": {"label": "30 Days",  "amount": 40.0, "hours": 720},
+}
+
 # --- REFUND CONFIGURATION ---
 # Refund amounts per hour remaining. 
 # Set conservatively to prevent "Plan Arbitrage" (buying cheap long plans and refunding at expensive short rates).
 REFUND_RATE_CLAIMER_PER_HOUR = 0.15 # Approx $0.15 per hour
 REFUND_RATE_FARMER_PER_HOUR = 0.08  # Approx $0.08 per hour
+REFUND_RATE_API_CLAIMER_PER_HOUR = 0.10  # Approx $0.10 per hour
 
 PAYMENT_TIMEOUT = 15 * 60
 POLL_INTERVAL = 10
@@ -130,6 +157,64 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
         logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at} on {api_url}: {e}")
         return False
 
+def generate_unique_app_name(username: str):
+    """
+    Generate a unique app name based on username.
+    Format: api-cl-{username}
+    If taken, append random alphanumeric character.
+    """
+    # Clean username - remove @ and special characters
+    clean_user = username.lstrip("@").lower()
+    clean_user = ''.join(c for c in clean_user if c.isalnum() or c == '_')
+    
+    # Limit length
+    if len(clean_user) > 20:
+        clean_user = clean_user[:20]
+    
+    base_name = f"api-cl-{clean_user}"
+    
+    # Check if base name exists
+    existing = deployed_apps_col.find_one({"app_name": base_name})
+    if not existing:
+        return base_name
+    
+    # If exists, append random character until unique
+    for _ in range(100):  # Max 100 attempts
+        suffix = random.choice(string.ascii_lowercase + string.digits)
+        candidate = f"{base_name}-{suffix}"
+        existing = deployed_apps_col.find_one({"app_name": candidate})
+        if not existing:
+            return candidate
+    
+    # Fallback with random string
+    random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"{base_name}-{random_suffix}"
+
+def deploy_api_container(session_token: str, app_name: str):
+    """
+    Deploy API container for the user.
+    Calls the deploy API with the session token and app name.
+    """
+    try:
+        url = f"{API_CLAIMER_DEPLOY_URL}/deploy"
+        headers = {
+            "Authorization": f"Bearer {API_CLAIMER_AUTH_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "session_token": session_token,
+            "app_name": app_name
+        }
+        
+        logger.info(f"[DEPLOY] Deploying container: {app_name}")
+        r = requests.post(url, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+        logger.info(f"[DEPLOY] Deploy successful for {app_name}. Response: {r.text}")
+        return True, r.json() if r.text else {}
+    except Exception as e:
+        logger.exception(f"[DEPLOY] Failed to deploy container {app_name}: {e}")
+        return False, {"error": str(e)}
+
 def extract_status_from_query_response(resp_json):
     if not resp_json:
         return None
@@ -167,6 +252,10 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
         api_url = FARMER_API_URL
         product_name = "Chat Farmer"
         forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
+    elif product_type == "api_claimer":
+        api_url = API_CLAIMER_AUTH_URL
+        product_name = "API Claimer"
+        forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
     else:
         api_url = CLAIMER_API_URL
         product_name = "Code Claimer"
@@ -220,6 +309,58 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                     except Exception as e:
                         logger.error(f"Error processing referral reward: {e}")
 
+                # === API CLAIMER SPECIFIC: DEPLOY CONTAINER ===
+                deploy_message = ""
+                if product_type == "api_claimer":
+                    session_token = session.get("session_token")
+                    if session_token:
+                        # Generate unique app name
+                        app_name = generate_unique_app_name(username_clean)
+                        
+                        # Notify user about deployment starting
+                        await bot.send_message(
+                            user_id,
+                            f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> <b>Deploying your API container...</b>\n\n"
+                            f"App Name: <code>{app_name}</code>\n"
+                            f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
+                            f"<i>⏳ This may take up to 10 minutes. You will be notified when ready.</i>",
+                            parse_mode="html"
+                        )
+                        
+                        # Deploy container
+                        deploy_ok, deploy_resp = await asyncio.to_thread(deploy_api_container, session_token, app_name)
+                        
+                        if deploy_ok:
+                            # Save deployed app info to DB
+                            deployed_apps_col.insert_one({
+                                "user_id": user_id,
+                                "username": username_clean,
+                                "app_name": app_name,
+                                "session_token": session_token,
+                                "deployed_at": datetime.now(timezone.utc),
+                                "expires_at": datetime.now(timezone.utc) + timedelta(hours=hours),
+                                "status": "deploying"
+                            })
+                            
+                            deploy_message = (
+                                f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container deployment initiated!</b>\n"
+                                f"App Name: <code>{app_name}</code>\n"
+                                f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
+                                f"<i>Deployment takes up to 10 minutes.</i>"
+                            )
+                        else:
+                            deploy_message = (
+                                f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Container deployment failed.</b>\n"
+                                f"Your subscription is active but container was not deployed.\n"
+                                f"Please contact support with your API key."
+                            )
+                            logger.error(f"Deploy failed for user {user_id}: {deploy_resp}")
+                    else:
+                        deploy_message = (
+                            f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Session token not found.</b>\n"
+                            f"Please contact support to deploy your container manually."
+                        )
+
                 # Notify user
                 # Emoji: ✅
                 await bot.send_message(
@@ -227,7 +368,8 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                     f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Payment confirmed!\n\n"
                     f"Your <b>{product_name} - {plan_label}</b> subscription is activated.\n"
                     f"Stake Username: <code>@{username_clean}</code>\n"
-                    f"Duration: <b>{hours} hours</b>.",
+                    f"Duration: <b>{hours} hours</b>."
+                    f"{deploy_message}",
                     parse_mode="html"
                 )
 
@@ -356,11 +498,12 @@ def _parse_iso_datetime(s: str):
 
 async def check_active_users_loop():
     await asyncio.sleep(5)
-    logger.info("Active users reminder loop started (Dual API).")
+    logger.info("Active users reminder loop started (Multi-Product API).")
     
     api_sources = [
         {"name": "Code Claimer", "url": CLAIMER_API_URL},
-        {"name": "Chat Farmer", "url": FARMER_API_URL}
+        {"name": "Chat Farmer", "url": FARMER_API_URL},
+        {"name": "API Claimer", "url": API_CLAIMER_AUTH_URL}
     ]
 
     while True:
@@ -592,7 +735,8 @@ async def start_handler(event):
         "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
         "• Code Claimer (High-speed claiming)\n"
-        "• Chat Farmer (Automated chat farming)\n\n"
+        "• Chat Farmer (Automated chat farming)\n"
+        "• API Claimer (Dedicated API container)\n\n"
         "Select a product to purchase or manage your account."
     )
 
@@ -600,6 +744,7 @@ async def start_handler(event):
     # Purchase buttons (Product Selection)
     buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
     buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
+    buttons.append([Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")])
 
     # Account Actions Row
     account_row = []
@@ -690,6 +835,7 @@ async def back_start_handler(event):
     # Purchase buttons
     buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
     buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
+    buttons.append([Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")])
 
     # Account Actions Row
     account_row = []
@@ -713,7 +859,8 @@ async def back_start_handler(event):
         "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
         "• Code Claimer (High-speed claiming)\n"
-        "• Chat Farmer (Automated chat farming)\n\n"
+        "• Chat Farmer (Automated chat farming)\n"
+        "• API Claimer (Dedicated API container)\n\n"
         "Select a product to purchase or manage your account."
     )
     
@@ -735,6 +882,7 @@ async def buy_sub_menu_handler(event):
     buttons = [
         [Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")],
         [Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")],
+        [Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")],
     ]
     await event.edit("<b>Select Product to Renew:</b>", parse_mode="html", buttons=buttons)
 
@@ -751,18 +899,32 @@ async def buy_product_handler(event):
     if "farmer" in data_str:
         product_type = "farmer"
         product_display = "Chat Farmer"
+    elif "api_claimer" in data_str:
+        product_type = "api_claimer"
+        product_display = "API Claimer"
     
     session = user_sessions.setdefault(user_id, {})
     session["expecting_username"] = True
     session["product"] = product_type
 
-    text = (
-        f"<b>Buy {product_display} — Step 1: Provide your Stake username</b>\n\n"
-        "Send only the username. Examples:\n"
-        "• <code>alice123</code>\n"
-        "• <code>@alice123</code>\n\n"
-        "Do NOT send profile links or screenshots. After you send the username you'll be asked to confirm it."
-    )
+    # API Claimer has different flow - needs both username AND session token
+    if product_type == "api_claimer":
+        text = (
+            f"<b>Buy {product_display} — Step 1: Provide your Stake username</b>\n\n"
+            "Send only the username. Examples:\n"
+            "• <code>alice123</code>\n"
+            "• <code>@alice123</code>\n\n"
+            "Do NOT send profile links or screenshots.\n\n"
+            "<i>After username confirmation, you'll need to provide your Stake API key.</i>"
+        )
+    else:
+        text = (
+            f"<b>Buy {product_display} — Step 1: Provide your Stake username</b>\n\n"
+            "Send only the username. Examples:\n"
+            "• <code>alice123</code>\n"
+            "• <code>@alice123</code>\n\n"
+            "Do NOT send profile links or screenshots. After you send the username you'll be asked to confirm it."
+        )
     try:
         await event.edit(text, parse_mode="html")
     except:
@@ -816,7 +978,7 @@ async def terminate_sub_menu_handler(event):
 
     username = user_doc.get("username").lstrip("@")
     
-    # Search for active subscription in both APIs
+    # Search for active subscription in all APIs
     active_details = None # (api_url, expires_dt, product_type)
     
     # Check Claimer
@@ -842,6 +1004,19 @@ async def terminate_sub_menu_handler(event):
                         expires = _parse_iso_datetime(u.get("expires"))
                         if expires:
                             active_details = (FARMER_API_URL, expires, "Chat Farmer")
+                            break
+
+    # Check API Claimer (if not found in others)
+    if not active_details:
+        data_api_claimer = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
+        if data_api_claimer:
+            users = data_api_claimer.get("active_users", [])
+            if isinstance(users, list):
+                for u in users:
+                    if u.get("username", "").lower().lstrip("@") == username.lower():
+                        expires = _parse_iso_datetime(u.get("expires"))
+                        if expires:
+                            active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
                             break
     
     if not active_details:
@@ -878,6 +1053,8 @@ async def terminate_sub_menu_handler(event):
     if remaining_hours > 0:
         if product_name == "Code Claimer":
             refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
+        elif product_name == "API Claimer":
+            refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
         else:
             refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
             
@@ -927,6 +1104,7 @@ async def terminate_execute_handler(event):
     username = session.get("term_username")
     api_url = session.get("term_api")
     refund = session.get("term_refund", 0.0)
+    product_name = session.get("term_product", "Unknown")
     
     if not username or not api_url:
         await event.edit("Session expired. Please try again.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
@@ -938,6 +1116,19 @@ async def terminate_execute_handler(event):
     success = await asyncio.to_thread(delete_user_api, username, api_url)
     
     if success:
+        # If API Claimer, also stop the deployed container
+        if product_name == "API Claimer":
+            try:
+                deployed_app = deployed_apps_col.find_one({"username": username, "status": "active"})
+                if deployed_app:
+                    # Mark as terminated (you can add API call to stop container here)
+                    deployed_apps_col.update_one(
+                        {"app_name": deployed_app["app_name"]},
+                        {"$set": {"status": "terminated", "terminated_at": datetime.now(timezone.utc)}}
+                    )
+            except Exception as e:
+                logger.error(f"Failed to mark deployed app as terminated: {e}")
+        
         # Check if the terminated username matches the user's current DB username
         user_doc = users_col.find_one({"user_id": user_id})
         current_db_user = user_doc.get("username", "").lstrip("@") if user_doc else ""
@@ -969,23 +1160,72 @@ async def terminate_execute_handler(event):
     session.pop("term_username", None)
     session.pop("term_api", None)
     session.pop("term_refund", None)
+    session.pop("term_product", None)
 
 # ================== TEXT INPUT HANDLER ==================
 
-@bot.on(events.NewMessage(pattern=r"^[A-Za-z0-9_@]{3,51}$"))
-async def username_handler(event):
+@bot.on(events.NewMessage)
+async def text_input_handler(event):
     user_id = event.sender_id
     session = user_sessions.setdefault(user_id, {})
+    
+    raw_text = event.raw_text.strip()
 
-    raw_username = event.raw_text.strip()
-    username_clean = raw_username.lstrip('@')
+    # --- HANDLE SESSION TOKEN INPUT FOR API CLAIMER ---
+    if session.get("expecting_session_token"):
+        session["expecting_session_token"] = False
+        
+        # Validate session token (basic check - should be a long string)
+        if len(raw_text) < 20:
+            await event.respond(
+                "❌ Invalid API key. Your Stake API key should be a long string.\n\n"
+                "Please send a valid API key or click below to skip.",
+                buttons=[[Button.inline("⏭️ Skip for now", b"skip_session_token")]]
+            )
+            return
+        
+        session["session_token"] = raw_text
+        
+        # Proceed to payment selection
+        username_clean = session.get("username", "UNKNOWN")
+        prod_name = "API Claimer"
+        
+        text = (
+            f"<b>✅ API Key Saved!</b>\n\n"
+            f"Username: <code>@{username_clean}</code>\n"
+            f"Product: <b>{prod_name}</b>\n\n"
+            "Choose payment method:"
+        )
+        buttons = [
+            [Button.inline("💳 Buy with Crypto / Points", b"buy_crypto")],
+            [Button.inline("💵 Buy with UPI", b"buy_upi")],
+            [
+                Button.url("🛠 Support", SUPPORT_CHAT_LINK),
+                Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
+            ],
+        ]
+        
+        await event.respond(text, parse_mode="html", buttons=buttons)
+        return
+
+    # Skip pattern matching for commands and short text
+    if raw_text.startswith("/"):
+        return
+    
+    # Username pattern check
+    import re
+    username_pattern = r"^[A-Za-z0-9_@]{3,51}$"
+    if not re.match(username_pattern, raw_text):
+        return
+
+    username_clean = raw_text.lstrip('@')
 
     # --- TERMINATE OLD USERNAME FLOW ---
     if session.get("expecting_term_username"):
         session["expecting_term_username"] = False
         target_username = username_clean
         
-        # Search for active subscription in both APIs (Manual Search)
+        # Search for active subscription in all APIs (Manual Search)
         active_details = None
         
         # Check Claimer
@@ -1012,6 +1252,19 @@ async def username_handler(event):
                             if expires:
                                 active_details = (FARMER_API_URL, expires, "Chat Farmer")
                                 break
+
+        # Check API Claimer
+        if not active_details:
+            data_api_claimer = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
+            if data_api_claimer:
+                users = data_api_claimer.get("active_users", [])
+                if isinstance(users, list):
+                    for u in users:
+                        if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                            expires = _parse_iso_datetime(u.get("expires"))
+                            if expires:
+                                active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
+                                break
         
         if not active_details:
             await event.respond(
@@ -1037,6 +1290,8 @@ async def username_handler(event):
         if remaining_hours > 0:
             if product_name == "Code Claimer":
                 refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
+            elif product_name == "API Claimer":
+                refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
             else:
                 refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
                 
@@ -1130,10 +1385,6 @@ async def username_handler(event):
 
     # --- STANDARD PURCHASE FLOW ---
     if not session.get("expecting_username"):
-        # If not expecting username, this handler shouldn't have been triggered by regex if we want to show start menu
-        # But regex handlers fire before generic ones. 
-        # We'll just call start_handler here if not expecting input.
-        await start_handler(event)
         return
 
     # Save as pending until user confirms
@@ -1142,7 +1393,12 @@ async def username_handler(event):
     
     # Determine product display name
     prod = session.get("product", "claimer")
-    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
+    if prod == "api_claimer":
+        prod_name = "API Claimer"
+    elif prod == "farmer":
+        prod_name = "Chat Farmer"
+    else:
+        prod_name = "Code Claimer"
 
     text = (
         f"Product: <b>{prod_name}</b>\n\n"
@@ -1156,6 +1412,36 @@ async def username_handler(event):
     ]
 
     await event.respond(text, parse_mode="html", buttons=buttons)
+
+@bot.on(events.CallbackQuery(data=b"skip_session_token"))
+async def skip_session_token_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        return await event.respond("Session expired. Restart with /start.")
+    
+    username_clean = session.get("username", "UNKNOWN")
+    prod_name = "API Claimer"
+    
+    text = (
+        f"<b>⚠️ API Key Skipped</b>\n\n"
+        f"Username: <code>@{username_clean}</code>\n"
+        f"Product: <b>{prod_name}</b>\n\n"
+        f"<i>You can provide your API key later via support.</i>\n\n"
+        "Choose payment method:"
+    )
+    buttons = [
+        [Button.inline("💳 Buy with Crypto / Points", b"buy_crypto")],
+        [Button.inline("💵 Buy with UPI", b"buy_upi")],
+        [
+            Button.url("🛠 Support", SUPPORT_CHAT_LINK),
+            Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
+        ],
+    ]
+    
+    await event.edit(text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"confirm_username_no"))
 async def confirm_no_handler(event):
@@ -1204,8 +1490,35 @@ async def confirm_yes_handler(event):
         logger.exception("Failed to persist username to DB on confirm.")
 
     prod = session.get("product", "claimer")
-    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
+    if prod == "api_claimer":
+        prod_name = "API Claimer"
+    elif prod == "farmer":
+        prod_name = "Chat Farmer"
+    else:
+        prod_name = "Code Claimer"
 
+    # === API CLAIMER: ASK FOR SESSION TOKEN ===
+    if prod == "api_claimer":
+        text = (
+            f"Stake username saved: <code>@{username_clean}</code>\n"
+            f"Product: <b>{prod_name}</b>\n\n"
+            "<b>Step 2: Provide your Stake API Key</b>\n\n"
+            "To deploy your dedicated API container, we need your Stake API key.\n\n"
+            "<i>Your API key is a long string from your Stake account settings.</i>\n\n"
+            "Please paste your API key now:"
+        )
+        buttons = [
+            [Button.inline("⏭️ Skip for now", b"skip_session_token")],
+            [Button.inline("❌ Cancel", b"back_to_start")]
+        ]
+        session["expecting_session_token"] = True
+        try:
+            await event.edit(text, parse_mode="html", buttons=buttons)
+        except:
+            await event.respond(text, parse_mode="html", buttons=buttons)
+        return
+
+    # Standard flow for other products
     text = (
         f"Stake username saved: <code>@{username_clean}</code>\n"
         f"Product: <b>{prod_name}</b>\n\n"
@@ -1250,7 +1563,12 @@ async def buy_crypto_handler(event):
         return await event.respond("Restart with /start and send your username.")
 
     prod = session.get("product", "claimer")
-    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
+    if prod == "api_claimer":
+        prod_name = "API Claimer"
+    elif prod == "farmer":
+        prod_name = "Chat Farmer"
+    else:
+        prod_name = "Code Claimer"
 
     header = f"⚡ <b>{prod_name} Plans</b>"
     
@@ -1267,7 +1585,35 @@ async def buy_crypto_handler(event):
     
     buttons = []
     
-    if prod == "farmer":
+    if prod == "api_claimer":
+        # --- API CLAIMER PLANS ---
+        p1d = PLANS_API_CLAIMER["1d"]
+        p3d = PLANS_API_CLAIMER["3d"]
+        p7d = PLANS_API_CLAIMER["7d"]
+        p14d = PLANS_API_CLAIMER["14d"]
+        p30d = PLANS_API_CLAIMER["30d"]
+
+        # Text listing
+        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
+        text += f"• {p3d['label']:<8} — {p3d['amount']} USDT\n"
+        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
+        text += f"• {p14d['label']:<8} — {p14d['amount']} USDT\n"
+        text += f"• {p30d['label']:<8} — {p30d['amount']} USDT\n"
+
+        # API Claimer plan buttons
+        buttons.append([
+            Button.inline(f"1d — {p1d['amount']} $", b"plan_api_1d"),
+            Button.inline(f"3d — {p3d['amount']} $", b"plan_api_3d"),
+        ])
+        buttons.append([
+            Button.inline(f"7d — {p7d['amount']} $", b"plan_api_7d"),
+            Button.inline(f"14d — {p14d['amount']} $", b"plan_api_14d"),
+        ])
+        buttons.append([
+            Button.inline(f"30d — {p30d['amount']} $", b"plan_api_30d"),
+        ])
+        
+    elif prod == "farmer":
         # --- CHAT FARMER PLANS ---
         # 3h, 6h, 12h, 1d(24h), 2d, 4d, 7d
         # Layout: Symmetrical
@@ -1359,13 +1705,23 @@ async def plan_handler(event):
     if not session or "username" not in session:
         return await event.respond("Restart with /start and send your username first.")
 
-    plan_key = event.data.decode().split("_", 1)[1]
+    plan_key_raw = event.data.decode().split("_", 1)[1]
     
     # Check Product
     prod = session.get("product", "claimer")
 
+    # Handle API Claimer Plans
+    if plan_key_raw.startswith("api_"):
+        plan_key = plan_key_raw.replace("api_", "")
+        plan = PLANS_API_CLAIMER.get(plan_key)
+        if not plan:
+            return await event.respond("Invalid plan. Try again.")
+        amount = plan["amount"]
+        label = plan["label"]
+        hours = plan["hours"]
+        
     # Handle Special Weekend Plan
-    if plan_key == "weekend":
+    elif plan_key_raw == "weekend":
         now = datetime.now(timezone.utc)
         weekday = now.weekday()
         days_until_monday = 7 - weekday
@@ -1379,34 +1735,40 @@ async def plan_handler(event):
             
         amount = 5.0
         label = "Weekend Pass"
+        plan_key = "weekend"
         
-    elif plan_key == "1d":
+    elif plan_key_raw == "1d":
         # Handle 1d Plan (Split logic)
         if prod == "farmer":
             plan = PLAN_1D_FARMER
+        elif prod == "api_claimer":
+            plan = PLANS_API_CLAIMER["1d"]
         else:
             plan = PLAN_1D_CLAIMER
         amount = plan["amount"]
         label = plan["label"]
         hours = plan["hours"]
+        plan_key = "1d"
         
-    elif plan_key in PLANS_FARMER_SHORT:
+    elif plan_key_raw in PLANS_FARMER_SHORT:
         # Farmer specific short plans
-        plan = PLANS_FARMER_SHORT[plan_key]
+        plan = PLANS_FARMER_SHORT[plan_key_raw]
         amount = plan["amount"]
         label = plan["label"]
         hours = plan["hours"]
+        plan_key = plan_key_raw
         
     else:
         # Standard Long Term Plans (2d, 4d, 7d)
-        plan = PLANS_LONG_TERM.get(plan_key)
+        plan = PLANS_LONG_TERM.get(plan_key_raw)
         if not plan:
             return await event.respond("Invalid plan. Try again.")
         amount = plan["amount"]
         label = plan["label"]
-        if prod == "claimer" and plan_key == "2d":
+        if prod == "claimer" and plan_key_raw == "2d":
             label = "2 Days (48h)"
         hours = plan["hours"]
+        plan_key = plan_key_raw
 
     # Save selection to session
     session["selected_plan_key"] = plan_key
@@ -1419,7 +1781,12 @@ async def plan_handler(event):
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
     
-    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
+    if prod == "api_claimer":
+        prod_name = "API Claimer"
+    elif prod == "farmer":
+        prod_name = "Chat Farmer"
+    else:
+        prod_name = "Code Claimer"
 
     # Emoji 🛒: 5226656353744862682
     # Emoji 💰 (Alt/Gold): 6325444137797554944
@@ -1458,7 +1825,11 @@ async def pay_points_handler(event):
     username_clean = session["username"]
     
     prod = session.get("product", "claimer")
-    if prod == "farmer":
+    if prod == "api_claimer":
+        api_url = API_CLAIMER_AUTH_URL
+        prod_name = "API Claimer"
+        forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
+    elif prod == "farmer":
         api_url = FARMER_API_URL
         prod_name = "Chat Farmer"
         forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
@@ -1485,6 +1856,59 @@ async def pay_points_handler(event):
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
     
     if activation_ok:
+        # === API CLAIMER: DEPLOY CONTAINER ===
+        deploy_message = ""
+        if prod == "api_claimer":
+            session_token = session.get("session_token")
+            if session_token:
+                # Generate unique app name
+                app_name = generate_unique_app_name(username_clean)
+                
+                # Notify user about deployment starting
+                await bot.send_message(
+                    user_id,
+                    f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> <b>Deploying your API container...</b>\n\n"
+                    f"App Name: <code>{app_name}</code>\n"
+                    f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
+                    f"<i>⏳ This may take up to 10 minutes. You will be notified when ready.</i>",
+                    parse_mode="html"
+                )
+                
+                # Deploy container
+                deploy_ok, deploy_resp = await asyncio.to_thread(deploy_api_container, session_token, app_name)
+                
+                if deploy_ok:
+                    # Save deployed app info to DB
+                    deployed_apps_col.insert_one({
+                        "user_id": user_id,
+                        "username": username_clean,
+                        "app_name": app_name,
+                        "session_token": session_token,
+                        "deployed_at": datetime.now(timezone.utc),
+                        "expires_at": datetime.now(timezone.utc) + timedelta(hours=hours),
+                        "status": "deploying"
+                    })
+                    
+                    deploy_message = (
+                        f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container deployment initiated!</b>\n"
+                        f"App Name: <code>{app_name}</code>\n"
+                        f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
+                        f"<i>Deployment takes up to 10 minutes.</i>"
+                    )
+                else:
+                    deploy_message = (
+                        f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Container deployment failed.</b>\n"
+                        f"Your subscription is active but container was not deployed.\n"
+                        f"Please contact support with your API key."
+                    )
+                    logger.error(f"Deploy failed for user {user_id}: {deploy_resp}")
+            else:
+                deploy_message = (
+                    f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>No API key provided.</b>\n"
+                    f"Your subscription is active but container was not deployed.\n"
+                    f"Please contact support with your API key to deploy manually."
+                )
+        
         # FORWARD + PIN
         for chat, msg_id in forwards:
             try:
@@ -1504,7 +1928,8 @@ async def pay_points_handler(event):
             f"Your <b>{prod_name} - {label}</b> subscription is activated.\n"
             f"Deducted: <b>{amount} Points</b>\n"
             f"Remaining: <b>{user_points - amount:.2f} Points</b>\n"
-            f"Duration: <b>{hours} hours</b>.",
+            f"Duration: <b>{hours} hours</b>."
+            f"{deploy_message}",
             parse_mode="html"
         )
     else:
@@ -1527,7 +1952,12 @@ async def pay_crypto_inv_handler(event):
     hours = session["selected_hours"]
     
     prod = session.get("product", "claimer")
-    prod_name = "Code Claimer" if prod == "claimer" else "Chat Farmer"
+    if prod == "api_claimer":
+        prod_name = "API Claimer"
+    elif prod == "farmer":
+        prod_name = "Chat Farmer"
+    else:
+        prod_name = "Code Claimer"
 
     if user_id in user_tasks:
         old = user_tasks[user_id]
@@ -1633,7 +2063,7 @@ async def broadcast_handler(event):
 # ================== MAIN ==================
 
 def main():
-    logger.info("Stake Payment Bot (Multi-Product) is running...")
+    logger.info("Stake Payment Bot (Multi-Product with API Claimer) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
