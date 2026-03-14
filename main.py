@@ -4,6 +4,7 @@ import time
 import requests
 import random
 import string
+import json
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button, functions, types
 from pymongo import MongoClient
@@ -58,7 +59,7 @@ deployed_apps_col = db["deployed_apps"]
 BOT_OWNER_ID = 7618467489
 
 # OxaPay API
-OXAPAY_API_KEY = "SNJEE3-MOEI0B-ZR0FW4-UWSLXH"
+OXAPAY_API_KEY = "SNJEE3-MOEI0B-WR0FW4-UWSLXH"
 OXAPAY_API_BASE = "https://api.oxapay.com"
 
 # Active users checker settings
@@ -194,12 +195,14 @@ def deploy_api_container(session_token: str, app_name: str):
     """
     Deploy API container for the user.
     Calls the deploy API with the session token and app name.
+    Returns SSE streaming response and parses the final status.
     """
     try:
         url = f"{API_CLAIMER_DEPLOY_URL}/deploy"
         headers = {
             "Authorization": f"Bearer {API_CLAIMER_AUTH_TOKEN}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream"
         }
         payload = {
             "session_token": session_token,
@@ -207,10 +210,66 @@ def deploy_api_container(session_token: str, app_name: str):
         }
         
         logger.info(f"[DEPLOY] Deploying container: {app_name}")
-        r = requests.post(url, headers=headers, json=payload, timeout=30)
-        r.raise_for_status()
-        logger.info(f"[DEPLOY] Deploy successful for {app_name}. Response: {r.text}")
-        return True, r.json() if r.text else {}
+        
+        # Use stream=True to handle SSE response
+        r = requests.post(url, headers=headers, json=payload, stream=True, timeout=600)
+        
+        if r.status_code >= 400:
+            error_text = r.text
+            logger.error(f"[DEPLOY] Deploy failed with status {r.status_code}: {error_text}")
+            return False, {"error": f"HTTP {r.status_code}: {error_text}"}
+        
+        # Parse SSE stream
+        final_result = None
+        last_status = None
+        
+        for line in r.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            
+            line = line.strip()
+            
+            # SSE data lines start with "data: "
+            if line.startswith("data: "):
+                data_str = line[6:]  # Remove "data: " prefix
+                try:
+                    data = json.loads(data_str)
+                    status = data.get("status", "")
+                    message = data.get("message", "")
+                    progress = data.get("progress", 0)
+                    
+                    logger.info(f"[DEPLOY] Status update: {status} - {message} ({progress}%)")
+                    
+                    # Track the last status
+                    last_status = data
+                    
+                    # Check for final states
+                    if status == "completed":
+                        final_result = data
+                        logger.info(f"[DEPLOY] Deploy completed successfully for {app_name}")
+                        return True, data
+                    elif status == "error" or status == "build_failed" or status == "build_timeout":
+                        logger.error(f"[DEPLOY] Deploy failed: {message}")
+                        return False, data
+                        
+                except json.JSONDecodeError as e:
+                    logger.warning(f"[DEPLOY] Failed to parse SSE data: {data_str}")
+                    continue
+        
+        # If we got here, check the last status
+        if last_status:
+            if last_status.get("status") == "completed":
+                return True, last_status
+            elif last_status.get("success") is True:
+                return True, last_status
+        
+        # No clear result
+        logger.warning(f"[DEPLOY] Stream ended without clear result for {app_name}")
+        return False, {"error": "Stream ended without completion status", "last_status": last_status}
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"[DEPLOY] Deploy timeout for {app_name}")
+        return False, {"error": "Deployment timed out"}
     except Exception as e:
         logger.exception(f"[DEPLOY] Failed to deploy container {app_name}: {e}")
         return False, {"error": str(e)}
@@ -317,17 +376,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         # Generate unique app name
                         app_name = generate_unique_app_name(username_clean)
                         
-                        # Notify user about deployment starting
-                        await bot.send_message(
-                            user_id,
-                            f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> <b>Deploying your API container...</b>\n\n"
-                            f"App Name: <code>{app_name}</code>\n"
-                            f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
-                            f"<i>⏳ This may take up to 10 minutes. You will be notified when ready.</i>",
-                            parse_mode="html"
-                        )
-                        
-                        # Deploy container
+                        # Deploy container first (before sending any message)
                         deploy_ok, deploy_resp = await asyncio.to_thread(deploy_api_container, session_token, app_name)
                         
                         if deploy_ok:
@@ -339,18 +388,22 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                                 "session_token": session_token,
                                 "deployed_at": datetime.now(timezone.utc),
                                 "expires_at": datetime.now(timezone.utc) + timedelta(hours=hours),
-                                "status": "deploying"
+                                "status": "active"
                             })
                             
+                            web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
+                            
                             deploy_message = (
-                                f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container deployment initiated!</b>\n"
+                                f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container Deployed!</b>\n"
                                 f"App Name: <code>{app_name}</code>\n"
                                 f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
-                                f"<i>Deployment takes up to 10 minutes.</i>"
+                                f"URL: <code>{web_url}</code>"
                             )
                         else:
+                            error_msg = deploy_resp.get("message", deploy_resp.get("error", "Unknown error"))
                             deploy_message = (
                                 f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Container deployment failed.</b>\n"
+                                f"Error: {error_msg}\n"
                                 f"Your subscription is active but container was not deployed.\n"
                                 f"Please contact support with your API key."
                             )
@@ -1864,17 +1917,7 @@ async def pay_points_handler(event):
                 # Generate unique app name
                 app_name = generate_unique_app_name(username_clean)
                 
-                # Notify user about deployment starting
-                await bot.send_message(
-                    user_id,
-                    f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> <b>Deploying your API container...</b>\n\n"
-                    f"App Name: <code>{app_name}</code>\n"
-                    f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
-                    f"<i>⏳ This may take up to 10 minutes. You will be notified when ready.</i>",
-                    parse_mode="html"
-                )
-                
-                # Deploy container
+                # Deploy container (SSE streaming is handled inside the function)
                 deploy_ok, deploy_resp = await asyncio.to_thread(deploy_api_container, session_token, app_name)
                 
                 if deploy_ok:
@@ -1886,18 +1929,22 @@ async def pay_points_handler(event):
                         "session_token": session_token,
                         "deployed_at": datetime.now(timezone.utc),
                         "expires_at": datetime.now(timezone.utc) + timedelta(hours=hours),
-                        "status": "deploying"
+                        "status": "active"
                     })
                     
+                    web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
+                    
                     deploy_message = (
-                        f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container deployment initiated!</b>\n"
+                        f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container Deployed!</b>\n"
                         f"App Name: <code>{app_name}</code>\n"
                         f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
-                        f"<i>Deployment takes up to 10 minutes.</i>"
+                        f"URL: <code>{web_url}</code>"
                     )
                 else:
+                    error_msg = deploy_resp.get("message", deploy_resp.get("error", "Unknown error"))
                     deploy_message = (
                         f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Container deployment failed.</b>\n"
+                        f"Error: {error_msg}\n"
                         f"Your subscription is active but container was not deployed.\n"
                         f"Please contact support with your API key."
                     )
