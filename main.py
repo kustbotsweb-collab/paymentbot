@@ -99,6 +99,15 @@ PLANS_API_CLAIMER = {
     "30d": {"label": "30 Days",  "amount": 40.0, "hours": 720},
 }
 
+# --- BULK POINTS PACKAGES ---
+BULK_POINTS_PACKAGES = {
+    "5":   {"label": "5 Points",    "amount": 5.0,  "points": 5},
+    "10":  {"label": "10 Points",   "amount": 9.5,  "points": 10},   # 5% bonus
+    "25":  {"label": "25 Points",   "amount": 22.5, "points": 25},   # 10% bonus
+    "50":  {"label": "50 Points",   "amount": 42.5, "points": 50},   # 15% bonus
+    "100": {"label": "100 Points",  "amount": 80.0, "points": 100},  # 20% bonus
+}
+
 # --- REFUND CONFIGURATION ---
 # Refund amounts per hour remaining. 
 # Set conservatively to prevent "Plan Arbitrage" (buying cheap long plans and refunding at expensive short rates).
@@ -120,6 +129,9 @@ bot_username = None # Will be set on startup
 
 # keep track of reminders sent to avoid duplicates: { username_lc: expires_iso }
 _reminder_sent = {}
+
+# Track expired cleanup to avoid duplicates
+_expired_cleanup_sent = {}
 
 # ================== OXAPAY HELPERS ==================
 
@@ -157,6 +169,31 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
     except Exception as e:
         logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at} on {api_url}: {e}")
         return False
+
+def delete_deployed_app(app_name: str):
+    """
+    Delete a deployed Heroku app/container via the deploy API.
+    """
+    try:
+        url = f"{API_CLAIMER_DEPLOY_URL}/apps/{app_name}"
+        headers = {
+            "Authorization": f"Bearer {API_CLAIMER_AUTH_TOKEN}"
+        }
+        
+        logger.info(f"[DELETE_APP] Deleting container: {app_name}")
+        
+        r = requests.delete(url, headers=headers, timeout=30)
+        
+        if r.status_code == 200:
+            logger.info(f"[DELETE_APP] Successfully deleted app: {app_name}")
+            return True, r.json()
+        else:
+            logger.error(f"[DELETE_APP] Failed to delete app {app_name}: {r.status_code} - {r.text}")
+            return False, {"error": f"HTTP {r.status_code}: {r.text}"}
+            
+    except Exception as e:
+        logger.exception(f"[DELETE_APP] Exception deleting app {app_name}: {e}")
+        return False, {"error": str(e)}
 
 def generate_unique_app_name(username: str):
     """
@@ -298,7 +335,103 @@ def extract_status_from_query_response(resp_json):
                     return str(s).lower()
     return None
 
-async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: int, plan_amount: float):
+# ================== PROGRESS ANIMATION HELPER ==================
+
+async def animate_deploy_progress(user_id: int, app_name: str, session_token: str):
+    """
+    Deploy container with animated progress messages.
+    Returns (success, result) tuple.
+    """
+    # Animation frames
+    frames = [
+        "⏳ Initializing deployment...",
+        "⏳ Fetching container image...",
+        "⏳ Setting up environment...",
+        "⏳ Configuring network...",
+        "⏳ Starting container...",
+        "⏳ Running health checks...",
+        "⏳ Finalizing deployment...",
+    ]
+    
+    # Send initial message
+    progress_msg = await bot.send_message(
+        user_id,
+        f"🚀 <b>Deploying your API Claimer container...</b>\n\n"
+        f"App Name: <code>{app_name}</code>\n"
+        f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
+        f"{frames[0]}",
+        parse_mode="html"
+    )
+    
+    frame_idx = 0
+    dots = ""
+    
+    async def update_progress():
+        nonlocal frame_idx, dots
+        try:
+            # Cycle through dots
+            dots = "." * ((len(dots) % 3) + 1)
+            current_frame = frames[frame_idx % len(frames)]
+            
+            await bot.edit_message(
+                user_id,
+                progress_msg.id,
+                f"🚀 <b>Deploying your API Claimer container...</b>\n\n"
+                f"App Name: <code>{app_name}</code>\n"
+                f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
+                f"{current_frame}{dots}",
+                parse_mode="html"
+            )
+            frame_idx += 1
+        except Exception as e:
+            logger.warning(f"Failed to update progress message: {e}")
+    
+    # Start deployment in background
+    deploy_task = asyncio.create_task(
+        asyncio.to_thread(deploy_api_container, session_token, app_name)
+    )
+    
+    # Animate while waiting
+    while not deploy_task.done():
+        await update_progress()
+        await asyncio.sleep(2)  # Update every 2 seconds
+    
+    # Get result
+    try:
+        success, result = deploy_task.result()
+    except Exception as e:
+        logger.exception(f"Deploy task raised exception: {e}")
+        success = False
+        result = {"error": str(e)}
+    
+    # Update final message
+    if success:
+        web_url = result.get("web_url", f"https://{app_name}.herokuapp.com")
+        await bot.edit_message(
+            user_id,
+            progress_msg.id,
+            f"✅ <b>Container Deployed Successfully!</b>\n\n"
+            f"App Name: <code>{app_name}</code>\n"
+            f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
+            f"URL: <code>{web_url}</code>\n\n"
+            f"🎉 Your API Claimer is now live!",
+            parse_mode="html"
+        )
+    else:
+        error_msg = result.get("message", result.get("error", "Unknown error"))
+        await bot.edit_message(
+            user_id,
+            progress_msg.id,
+            f"❌ <b>Container Deployment Failed</b>\n\n"
+            f"App Name: <code>{app_name}</code>\n"
+            f"Error: {error_msg}\n\n"
+            f"Please contact support for assistance.",
+            parse_mode="html"
+        )
+    
+    return success, result
+
+async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: int, plan_amount: float, is_bulk_points: bool = False, points_amount: int = 0):
     session = user_sessions.get(user_id)
     if not session:
         logger.warning(f"wait_for_payment: no session for {user_id}")
@@ -306,19 +439,25 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
     product_type = session.get("product", "claimer")
     
-    # Configure variables based on product
-    if product_type == "farmer":
-        api_url = FARMER_API_URL
-        product_name = "Chat Farmer"
-        forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
-    elif product_type == "api_claimer":
-        api_url = API_CLAIMER_AUTH_URL
-        product_name = "API Claimer"
-        forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
+    # Handle bulk points purchase
+    if is_bulk_points:
+        product_name = "Points Purchase"
+        forwards = []
+        api_url = None
     else:
-        api_url = CLAIMER_API_URL
-        product_name = "Code Claimer"
-        forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
+        # Configure variables based on product
+        if product_type == "farmer":
+            api_url = FARMER_API_URL
+            product_name = "Chat Farmer"
+            forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
+        elif product_type == "api_claimer":
+            api_url = API_CLAIMER_AUTH_URL
+            product_name = "API Claimer"
+            forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
+        else:
+            api_url = CLAIMER_API_URL
+            product_name = "Code Claimer"
+            forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
 
     start = time.time()
     while time.time() - start < PAYMENT_TIMEOUT:
@@ -332,6 +471,30 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
             logger.info(f"Invoice {track_id} status check: {status}")
 
             if status == "paid":
+                
+                # === BULK POINTS PURCHASE ===
+                if is_bulk_points:
+                    # Add points to user account
+                    users_col.update_one(
+                        {"user_id": user_id},
+                        {"$inc": {"points": points_amount}},
+                        upsert=True
+                    )
+                    
+                    # Get updated balance
+                    user_record = users_col.find_one({"user_id": user_id})
+                    new_balance = user_record.get("points", 0.0) if user_record else points_amount
+                    
+                    await bot.send_message(
+                        user_id,
+                        f"✅ <b>Payment Confirmed!</b>\n\n"
+                        f"Points Purchased: <b>{points_amount}</b>\n"
+                        f"New Balance: <b>{new_balance:.2f} Points</b>\n\n"
+                        f"Use your points to purchase subscriptions!",
+                        parse_mode="html"
+                    )
+                    return True
+                
                 username_clean = session.get("username", "UNKNOWN")
 
                 # call activation API in a background thread
@@ -368,7 +531,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                     except Exception as e:
                         logger.error(f"Error processing referral reward: {e}")
 
-                # === API CLAIMER SPECIFIC: DEPLOY CONTAINER ===
+                # === API CLAIMER SPECIFIC: DEPLOY CONTAINER WITH ANIMATION ===
                 deploy_message = ""
                 if product_type == "api_claimer":
                     session_token = session.get("session_token")
@@ -376,8 +539,8 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         # Generate unique app name
                         app_name = generate_unique_app_name(username_clean)
                         
-                        # Deploy container first (before sending any message)
-                        deploy_ok, deploy_resp = await asyncio.to_thread(deploy_api_container, session_token, app_name)
+                        # Deploy container with animated progress
+                        deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token)
                         
                         if deploy_ok:
                             # Save deployed app info to DB
@@ -394,7 +557,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                             web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
                             
                             deploy_message = (
-                                f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container Deployed!</b>\n"
+                                f"\n\n✅ <b>Container Deployed!</b>\n"
                                 f"App Name: <code>{app_name}</code>\n"
                                 f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
                                 f"URL: <code>{web_url}</code>"
@@ -402,7 +565,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         else:
                             error_msg = deploy_resp.get("message", deploy_resp.get("error", "Unknown error"))
                             deploy_message = (
-                                f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Container deployment failed.</b>\n"
+                                f"\n\n⚠️ <b>Container deployment failed.</b>\n"
                                 f"Error: {error_msg}\n"
                                 f"Your subscription is active but container was not deployed.\n"
                                 f"Please contact support with your API key."
@@ -410,7 +573,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                             logger.error(f"Deploy failed for user {user_id}: {deploy_resp}")
                     else:
                         deploy_message = (
-                            f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Session token not found.</b>\n"
+                            f"\n\n⚠️ <b>Session token not found.</b>\n"
                             f"Please contact support to deploy your container manually."
                         )
 
@@ -418,7 +581,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                 # Emoji: ✅
                 await bot.send_message(
                     user_id,
-                    f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Payment confirmed!\n\n"
+                    f"✅ Payment confirmed!\n\n"
                     f"Your <b>{product_name} - {plan_label}</b> subscription is activated.\n"
                     f"Stake Username: <code>@{username_clean}</code>\n"
                     f"Duration: <b>{hours} hours</b>."
@@ -451,7 +614,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
             if status in ("expired", "cancelled", "cancel", "failed"):
                 # Emoji: ❌
-                await bot.send_message(user_id, f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Invoice for {product_name} ({plan_label}) expired or cancelled.", parse_mode="html")
+                await bot.send_message(user_id, f"❌ Invoice for {product_name} ({plan_label}) expired or cancelled.", parse_mode="html")
                 return False
 
         except Exception as e:
@@ -459,7 +622,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
     # timeout reached
     # Emoji: ⏳
-    await bot.send_message(user_id, "<tg-emoji emoji-id='4954254104604967967'>⏳</tg-emoji> Payment not confirmed. Create a new invoice.", parse_mode="html")
+    await bot.send_message(user_id, "⏳ Payment not confirmed. Create a new invoice.", parse_mode="html")
     return False
 
 # ================== API MANAGEMENT HELPERS ==================
@@ -610,7 +773,7 @@ async def check_active_users_loop():
                                 try:
                                     # Emoji: ⏳
                                     rem_text = (
-                                        f"<tg-emoji emoji-id='4954254104604967967'>⏳</tg-emoji> <b>Subscription ending soon</b>\n\n"
+                                        f"⏳ <b>Subscription ending soon</b>\n\n"
                                         f"Product: <b>{api_name}</b>\n"
                                         f"User: <code>@{username_clean}</code>\n"
                                         f"Expires: {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
@@ -626,6 +789,65 @@ async def check_active_users_loop():
                                     _reminder_sent[reminder_key] = True
                                 except Exception as e:
                                     logger.exception(f"Failed to send reminder to {username_clean}: {e}")
+                                    
+                            # === AUTO-DELETE EXPIRED API CLAIMER CONTAINERS ===
+                            if minutes_left <= 0 and api_name == "API Claimer":
+                                # Check if this expired user has a deployed container
+                                cleanup_key = f"{username_clean.lower()}_{expires_dt.isoformat()}"
+                                
+                                if _expired_cleanup_sent.get(cleanup_key):
+                                    continue
+                                
+                                deployed_app = deployed_apps_col.find_one({
+                                    "username": username_clean,
+                                    "status": "active"
+                                })
+                                
+                                if deployed_app:
+                                    app_name = deployed_app.get("app_name")
+                                    user_id = deployed_app.get("user_id")
+                                    
+                                    if app_name:
+                                        logger.info(f"[AUTO_DELETE] Subscription expired for @{username_clean}, deleting container: {app_name}")
+                                        
+                                        # Delete the container
+                                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
+                                        
+                                        if delete_ok:
+                                            # Update DB
+                                            deployed_apps_col.update_one(
+                                                {"app_name": app_name},
+                                                {"$set": {
+                                                    "status": "expired_deleted",
+                                                    "deleted_at": datetime.now(timezone.utc),
+                                                    "deletion_reason": "subscription_expired"
+                                                }}
+                                            )
+                                            
+                                            # Notify user
+                                            if user_id:
+                                                try:
+                                                    await bot.send_message(
+                                                        user_id,
+                                                        f"⏰ <b>Subscription Expired</b>\n\n"
+                                                        f"Your API Claimer subscription has expired.\n"
+                                                        f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
+                                                        f"Renew to get a new container deployed.",
+                                                        parse_mode="html",
+                                                        buttons=[
+                                                            [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
+                                                            [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
+                                                        ]
+                                                    )
+                                                except Exception as e:
+                                                    logger.error(f"Failed to notify user {user_id} about expired container: {e}")
+                                            
+                                            logger.info(f"[AUTO_DELETE] Successfully deleted expired container: {app_name}")
+                                        else:
+                                            logger.error(f"[AUTO_DELETE] Failed to delete container {app_name}: {delete_resp}")
+                                    
+                                    _expired_cleanup_sent[cleanup_key] = True
+                                            
                         except Exception as ee:
                             logger.exception(f"Error processing active user entry: {ee}")
         
@@ -633,6 +855,91 @@ async def check_active_users_loop():
             logger.exception(f"check_active_users_loop error: {e}")
 
         await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
+
+# Also run a separate loop for checking deployed containers directly
+async def check_deployed_containers_loop():
+    """
+    Secondary loop to check deployed containers against subscription status.
+    This ensures containers are deleted even if the main loop misses them.
+    """
+    await asyncio.sleep(30)  # Start after main loop
+    logger.info("Deployed containers cleanup loop started.")
+    
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            
+            # Find all active deployed containers
+            active_containers = deployed_apps_col.find({"status": "active"})
+            
+            for container in active_containers:
+                try:
+                    app_name = container.get("app_name")
+                    username = container.get("username")
+                    user_id = container.get("user_id")
+                    expires_at = container.get("expires_at")
+                    
+                    if not expires_at or not app_name:
+                        continue
+                    
+                    # Parse expires_at if it's a string
+                    if isinstance(expires_at, str):
+                        expires_at = _parse_iso_datetime(expires_at)
+                    
+                    if not expires_at:
+                        continue
+                    
+                    # Check if expired
+                    if now > expires_at:
+                        cleanup_key = f"{username.lower()}_{expires_at.isoformat()}_container"
+                        
+                        if _expired_cleanup_sent.get(cleanup_key):
+                            continue
+                        
+                        logger.info(f"[CONTAINER_CLEANUP] Container expired: {app_name} for @{username}")
+                        
+                        # Delete the container
+                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
+                        
+                        if delete_ok:
+                            deployed_apps_col.update_one(
+                                {"app_name": app_name},
+                                {"$set": {
+                                    "status": "expired_deleted",
+                                    "deleted_at": now,
+                                    "deletion_reason": "container_cleanup_loop"
+                                }}
+                            )
+                            
+                            # Notify user
+                            if user_id:
+                                try:
+                                    await bot.send_message(
+                                        user_id,
+                                        f"⏰ <b>Subscription Expired</b>\n\n"
+                                        f"Your API Claimer subscription has expired.\n"
+                                        f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
+                                        f"Renew to get a new container deployed.",
+                                        parse_mode="html",
+                                        buttons=[
+                                            [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
+                                            [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
+                                        ]
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Failed to notify user {user_id}: {e}")
+                        else:
+                            logger.error(f"[CONTAINER_CLEANUP] Failed to delete {app_name}: {delete_resp}")
+                        
+                        _expired_cleanup_sent[cleanup_key] = True
+                        
+                except Exception as e:
+                    logger.exception(f"Error processing container: {e}")
+        
+        except Exception as e:
+            logger.exception(f"check_deployed_containers_loop error: {e}")
+        
+        await asyncio.sleep(300)  # Check every 5 minutes
 
 
 # ================== ADD POINTS COMMAND ==================
@@ -716,7 +1023,236 @@ async def add_points_handler(event):
         logger.error(f"Error adding points: {e}")
         # Markdown Emoji for ❌
         await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
-        
+
+# ================== BULK POINTS PURCHASE COMMAND ==================
+
+@bot.on(events.NewMessage(pattern=r"^/buypoints$"))
+async def buypoints_handler(event):
+    user_id = event.sender_id
+    
+    # Reaction
+    try:
+        await bot(functions.messages.SendReactionRequest(
+            peer=event.chat_id,
+            msg_id=event.message.id,
+            reaction=[types.ReactionEmoji(emoticon='💰')],
+            add_to_recent=False
+        ))
+    except:
+        pass
+    
+    # Get current balance
+    user_data = users_col.find_one({"user_id": user_id})
+    current_points = user_data.get("points", 0.0) if user_data else 0.0
+    
+    text = (
+        f"💰 <b>Buy Points in Bulk</b>\n\n"
+        f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
+        f"<b>Available Packages:</b>\n"
+        f"• 5 Points — 5.0 USDT\n"
+        f"• 10 Points — 9.5 USDT (5% discount)\n"
+        f"• 25 Points — 22.5 USDT (10% discount)\n"
+        f"• 50 Points — 42.5 USDT (15% discount)\n"
+        f"• 100 Points — 80.0 USDT (20% discount)\n\n"
+        f"<i>1 Point = 1 USDT value</i>\n\n"
+        f"Select a package:"
+    )
+    
+    buttons = [
+        [
+            Button.inline("5 Pts — 5 $", b"bulk_5"),
+            Button.inline("10 Pts — 9.5 $", b"bulk_10"),
+        ],
+        [
+            Button.inline("25 Pts — 22.5 $", b"bulk_25"),
+            Button.inline("50 Pts — 42.5 $", b"bulk_50"),
+        ],
+        [
+            Button.inline("100 Pts — 80 $", b"bulk_100"),
+        ],
+        [Button.inline("🔙 Main Menu", b"back_to_start")]
+    ]
+    
+    try:
+        await event.respond(text, parse_mode="html", buttons=buttons)
+    except:
+        await event.reply(text, parse_mode="html", buttons=buttons)
+
+
+@bot.on(events.CallbackQuery(pattern=b"bulk_"))
+async def bulk_points_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    
+    # Extract package key
+    data_str = event.data.decode()
+    package_key = data_str.replace("bulk_", "")
+    
+    package = BULK_POINTS_PACKAGES.get(package_key)
+    if not package:
+        return await event.respond("Invalid package. Try again.")
+    
+    amount = package["amount"]
+    points = package["points"]
+    label = package["label"]
+    
+    # Save to session
+    session = user_sessions.setdefault(user_id, {})
+    session["bulk_points"] = points
+    session["bulk_amount"] = amount
+    session["bulk_label"] = label
+    session["product"] = "bulk_points"  # Mark as bulk points purchase
+    
+    # Get current balance
+    user_data = users_col.find_one({"user_id": user_id})
+    current_points = user_data.get("points", 0.0) if user_data else 0.0
+    
+    text = (
+        f"💰 <b>Bulk Points Purchase</b>\n\n"
+        f"Package: <b>{label}</b>\n"
+        f"Cost: <b>{amount} USDT</b>\n"
+        f"Points to receive: <b>{points}</b>\n\n"
+        f"Current Balance: <b>{current_points:.2f} Points</b>\n"
+        f"After Purchase: <b>{current_points + points:.2f} Points</b>\n\n"
+        f"Proceed to payment?"
+    )
+    
+    buttons = [
+        [Button.inline(f"💳 Pay {amount} USDT", b"bulk_pay_crypto")],
+        [Button.inline("🔙 Back to Packages", b"back_buypoints")]
+    ]
+    
+    try:
+        await event.edit(text, parse_mode="html", buttons=buttons)
+    except:
+        await event.respond(text, parse_mode="html", buttons=buttons)
+
+
+@bot.on(events.CallbackQuery(data=b"back_buypoints"))
+async def back_buypoints_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    
+    # Get current balance
+    user_data = users_col.find_one({"user_id": user_id})
+    current_points = user_data.get("points", 0.0) if user_data else 0.0
+    
+    text = (
+        f"💰 <b>Buy Points in Bulk</b>\n\n"
+        f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
+        f"<b>Available Packages:</b>\n"
+        f"• 5 Points — 5.0 USDT\n"
+        f"• 10 Points — 9.5 USDT (5% discount)\n"
+        f"• 25 Points — 22.5 USDT (10% discount)\n"
+        f"• 50 Points — 42.5 USDT (15% discount)\n"
+        f"• 100 Points — 80.0 USDT (20% discount)\n\n"
+        f"<i>1 Point = 1 USDT value</i>\n\n"
+        f"Select a package:"
+    )
+    
+    buttons = [
+        [
+            Button.inline("5 Pts — 5 $", b"bulk_5"),
+            Button.inline("10 Pts — 9.5 $", b"bulk_10"),
+        ],
+        [
+            Button.inline("25 Pts — 22.5 $", b"bulk_25"),
+            Button.inline("50 Pts — 42.5 $", b"bulk_50"),
+        ],
+        [
+            Button.inline("100 Pts — 80 $", b"bulk_100"),
+        ],
+        [Button.inline("🔙 Main Menu", b"back_to_start")]
+    ]
+    
+    try:
+        await event.edit(text, parse_mode="html", buttons=buttons)
+    except:
+        await event.respond(text, parse_mode="html", buttons=buttons)
+
+
+@bot.on(events.CallbackQuery(data=b"bulk_pay_crypto"))
+async def bulk_pay_crypto_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    session = user_sessions.get(user_id)
+    
+    if not session or "bulk_amount" not in session:
+        return await event.respond("Session expired. Please use /buypoints again.")
+    
+    amount = session["bulk_amount"]
+    points = session["bulk_points"]
+    label = session["bulk_label"]
+    
+    # Create invoice
+    await event.edit("🔄 Creating invoice...", parse_mode="html")
+    
+    try:
+        resp = await asyncio.to_thread(create_invoice, amount)
+    except Exception as e:
+        logger.exception(f"Invoice error: {e}")
+        return await event.edit("Failed to create invoice.")
+    
+    data = resp if isinstance(resp, dict) else {}
+    track_id = None
+    pay_url = None
+    
+    if isinstance(data, dict):
+        track_id = data.get("track_id") or data.get("trackId") or data.get("trackid")
+        pay_url = data.get("payment_url") or data.get("paymentUrl") or data.get("url")
+        nested = data.get("data") if isinstance(data.get("data"), dict) else None
+        if nested:
+            track_id = track_id or nested.get("track_id") or nested.get("trackId") or nested.get("trackid")
+            pay_url = pay_url or nested.get("payment_url") or nested.get("paymentUrl") or nested.get("url")
+        if not track_id and isinstance(data.get("data"), list) and len(data.get("data")) > 0:
+            el = data.get("data")[0]
+            if isinstance(el, dict):
+                track_id = el.get("track_id") or el.get("trackId") or el.get("trackid")
+                pay_url = el.get("payment_url") or el.get("paymentUrl") or el.get("url")
+    
+    if not track_id or not pay_url:
+        logger.error(f"Payment gateway returned unexpected response: {resp}")
+        return await event.edit("Payment gateway error.")
+    
+    session["track_id"] = track_id
+    
+    text = (
+        f"✅ <b>Bulk Points Purchase</b>\n"
+        f"Package: <b>{label}</b>\n"
+        f"Amount: <b>{amount} USDT</b>\n"
+        f"Points: <b>{points}</b>\n\n"
+        f"Click <b>Pay</b> to open OxaPay.\n"
+        f"Payment window: 15 minutes."
+    )
+    
+    buttons = [
+        [Button.url("🔗 Pay", pay_url)],
+        [
+            Button.url("🛠 Support", SUPPORT_CHAT_LINK),
+            Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
+        ],
+    ]
+    
+    try:
+        await event.edit(text, parse_mode="html", buttons=buttons)
+    except:
+        await event.respond(text, parse_mode="html", buttons=buttons)
+    
+    # Start payment wait task
+    task = asyncio.create_task(
+        wait_for_payment(
+            user_id, 
+            track_id, 
+            label, 
+            0,  # No hours for bulk points
+            amount, 
+            is_bulk_points=True, 
+            points_amount=points
+        )
+    )
+    user_tasks[user_id] = task
+
+
 # ================== START / MENU HANDLERS ==================
 
 @bot.on(events.NewMessage(pattern=r"^/start"))
@@ -806,6 +1342,9 @@ async def start_handler(event):
     account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
     buttons.append(account_row)
     
+    # Bulk Points Row
+    buttons.append([Button.inline("💰 Buy Points", b"menu_buypoints")])
+    
     # Termination Row
     if not first_time:
         buttons.append([Button.inline("🗑 Terminate Sub", b"terminate_sub_menu")])
@@ -874,6 +1413,50 @@ async def referral_menu_handler(event):
     except:
         await event.respond(text, parse_mode="html", buttons=buttons)
 
+# --- BUY POINTS MENU HANDLER ---
+
+@bot.on(events.CallbackQuery(data=b"menu_buypoints"))
+async def menu_buypoints_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    
+    # Get current balance
+    user_data = users_col.find_one({"user_id": user_id})
+    current_points = user_data.get("points", 0.0) if user_data else 0.0
+    
+    text = (
+        f"💰 <b>Buy Points in Bulk</b>\n\n"
+        f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
+        f"<b>Available Packages:</b>\n"
+        f"• 5 Points — 5.0 USDT\n"
+        f"• 10 Points — 9.5 USDT (5% discount)\n"
+        f"• 25 Points — 22.5 USDT (10% discount)\n"
+        f"• 50 Points — 42.5 USDT (15% discount)\n"
+        f"• 100 Points — 80.0 USDT (20% discount)\n\n"
+        f"<i>1 Point = 1 USDT value</i>\n\n"
+        f"Select a package:"
+    )
+    
+    buttons = [
+        [
+            Button.inline("5 Pts — 5 $", b"bulk_5"),
+            Button.inline("10 Pts — 9.5 $", b"bulk_10"),
+        ],
+        [
+            Button.inline("25 Pts — 22.5 $", b"bulk_25"),
+            Button.inline("50 Pts — 42.5 $", b"bulk_50"),
+        ],
+        [
+            Button.inline("100 Pts — 80 $", b"bulk_100"),
+        ],
+        [Button.inline("🔙 Back", b"back_to_start")]
+    ]
+    
+    try:
+        await event.edit(text, parse_mode="html", buttons=buttons)
+    except:
+        await event.respond(text, parse_mode="html", buttons=buttons)
+
 @bot.on(events.CallbackQuery(data=b"back_to_start"))
 async def back_start_handler(event):
     await event.answer()
@@ -896,6 +1479,9 @@ async def back_start_handler(event):
         account_row.append(Button.inline("✏️ Edit Username", b"edit_username"))
     account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
     buttons.append(account_row)
+    
+    # Bulk Points Row
+    buttons.append([Button.inline("💰 Buy Points", b"menu_buypoints")])
     
     # Termination Row
     if existing:
@@ -1174,13 +1760,22 @@ async def terminate_execute_handler(event):
             try:
                 deployed_app = deployed_apps_col.find_one({"username": username, "status": "active"})
                 if deployed_app:
-                    # Mark as terminated (you can add API call to stop container here)
-                    deployed_apps_col.update_one(
-                        {"app_name": deployed_app["app_name"]},
-                        {"$set": {"status": "terminated", "terminated_at": datetime.now(timezone.utc)}}
-                    )
+                    app_name = deployed_app.get("app_name")
+                    if app_name:
+                        # Delete the container via API
+                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
+                        
+                        # Mark as terminated in DB
+                        deployed_apps_col.update_one(
+                            {"app_name": app_name},
+                            {"$set": {
+                                "status": "terminated",
+                                "terminated_at": datetime.now(timezone.utc),
+                                "deletion_reason": "user_terminated"
+                            }}
+                        )
             except Exception as e:
-                logger.error(f"Failed to mark deployed app as terminated: {e}")
+                logger.error(f"Failed to delete deployed app during termination: {e}")
         
         # Check if the terminated username matches the user's current DB username
         user_doc = users_col.find_one({"user_id": user_id})
@@ -1196,7 +1791,7 @@ async def terminate_execute_handler(event):
         
         # Emoji ✅
         await event.edit(
-            f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Subscription Terminated</b>\n\n"
+            f"✅ <b>Subscription Terminated</b>\n\n"
             f"User <code>@{username}</code> deleted.\n"
             f"Refunded: <b>{refund} Points</b>.",
             parse_mode="html",
@@ -1380,7 +1975,7 @@ async def text_input_handler(event):
         
         # Emoji ✅: 5039793437776282663
         await event.respond(
-            f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Old Username identified: <code>@{username_clean}</code>\n\n"
+            f"✅ Old Username identified: <code>@{username_clean}</code>\n\n"
             "<b>Step 2:</b> Now send the <b>NEW</b> Stake username.",
             parse_mode="html"
         )
@@ -1399,7 +1994,7 @@ async def text_input_handler(event):
              return
 
         # Emoji 🔄: 5375338737028841420
-        await event.respond(f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> Processing change from <code>@{old_username}</code> to <code>@{new_username}</code>...", parse_mode="html")
+        await event.respond(f"🔄 Processing change from <code>@{old_username}</code> to <code>@{new_username}</code>...", parse_mode="html")
 
         # Call API (Tries both servers)
         try:
@@ -1407,7 +2002,7 @@ async def text_input_handler(event):
             
             if isinstance(resp, dict) and resp.get("ok") is False:
                 # Emoji ❌: 5273914604752216432
-                await event.respond(f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Rename API reported failure: {resp}\n\nLocal username not changed.", parse_mode="html")
+                await event.respond(f"❌ Rename API reported failure: {resp}\n\nLocal username not changed.", parse_mode="html")
                 return
 
             # Update DB references locally
@@ -1427,12 +2022,12 @@ async def text_input_handler(event):
                 logger.exception("Failed to update DB entries after rename API success.")
             
             # Emoji ✅: 5039793437776282663
-            await event.respond(f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.", parse_mode="html")
+            await event.respond(f"✅ Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.", parse_mode="html")
             
         except Exception as e:
             logger.exception("Rename process failed.")
             # Emoji ❌: 5273914604752216432
-            await event.respond(f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Error during rename: {e}", parse_mode="html")
+            await event.respond(f"❌ Error during rename: {e}", parse_mode="html")
         
         return
 
@@ -1632,7 +2227,7 @@ async def buy_crypto_handler(event):
     # Emoji 💳: 6129870117619634982
     text = (
         f"{header}\n"
-        "<tg-emoji emoji-id='6129870117619634982'>💳</tg-emoji> <b>Select a Plan</b>\n\n"
+        "💳 <b>Select a Plan</b>\n\n"
         "Plans:\n"
     )
     
@@ -1844,11 +2439,11 @@ async def plan_handler(event):
     # Emoji 🛒: 5226656353744862682
     # Emoji 💰 (Alt/Gold): 6325444137797554944
     text = (
-        f"<tg-emoji emoji-id='5226656353744862682'>🛒</tg-emoji> <b>Checkout: {prod_name}</b>\n\n"
+        f"🛒 <b>Checkout: {prod_name}</b>\n\n"
         f"Plan: <b>{label}</b>\n"
         f"Cost: <b>{amount} USDT</b> (or Points)\n"
         f"Duration: <b>{hours} Hours</b>\n\n"
-        f"<tg-emoji emoji-id='6325444137797554944'>💰</tg-emoji> Your Points: <b>{user_points:.2f}</b>\n\n"
+        f"💰 Your Points: <b>{user_points:.2f}</b>\n\n"
         "Select payment method:"
     )
     
@@ -1903,22 +2498,20 @@ async def pay_points_handler(event):
     users_col.update_one({"user_id": user_id}, {"$inc": {"points": -amount}})
     
     # Emoji 🔄: 5375338737028841420
-    await event.edit(f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> Activating {prod_name} subscription...", parse_mode="html")
+    await event.edit(f"🔄 Activating {prod_name} subscription...", parse_mode="html")
     
     # Activate
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
     
     if activation_ok:
-        # === API CLAIMER: DEPLOY CONTAINER ===
+        # === API CLAIMER: DEPLOY CONTAINER WITH ANIMATION ===
         deploy_message = ""
         if prod == "api_claimer":
             session_token = session.get("session_token")
             if session_token:
-                # Generate unique app name
+                # Deploy container with animated progress
                 app_name = generate_unique_app_name(username_clean)
-                
-                # Deploy container (SSE streaming is handled inside the function)
-                deploy_ok, deploy_resp = await asyncio.to_thread(deploy_api_container, session_token, app_name)
+                deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token)
                 
                 if deploy_ok:
                     # Save deployed app info to DB
@@ -1935,7 +2528,7 @@ async def pay_points_handler(event):
                     web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
                     
                     deploy_message = (
-                        f"\n\n<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Container Deployed!</b>\n"
+                        f"\n\n✅ <b>Container Deployed!</b>\n"
                         f"App Name: <code>{app_name}</code>\n"
                         f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
                         f"URL: <code>{web_url}</code>"
@@ -1943,7 +2536,7 @@ async def pay_points_handler(event):
                 else:
                     error_msg = deploy_resp.get("message", deploy_resp.get("error", "Unknown error"))
                     deploy_message = (
-                        f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>Container deployment failed.</b>\n"
+                        f"\n\n⚠️ <b>Container deployment failed.</b>\n"
                         f"Error: {error_msg}\n"
                         f"Your subscription is active but container was not deployed.\n"
                         f"Please contact support with your API key."
@@ -1951,7 +2544,7 @@ async def pay_points_handler(event):
                     logger.error(f"Deploy failed for user {user_id}: {deploy_resp}")
             else:
                 deploy_message = (
-                    f"\n\n<tg-emoji emoji-id='5273914604752216432'>⚠️</tg-emoji> <b>No API key provided.</b>\n"
+                    f"\n\n⚠️ <b>No API key provided.</b>\n"
                     f"Your subscription is active but container was not deployed.\n"
                     f"Please contact support with your API key to deploy manually."
                 )
@@ -1971,7 +2564,7 @@ async def pay_points_handler(event):
             
         # Emoji ✅: 5039793437776282663
         await event.edit(
-            f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> <b>Paid with Points!</b>\n\n"
+            f"✅ <b>Paid with Points!</b>\n\n"
             f"Your <b>{prod_name} - {label}</b> subscription is activated.\n"
             f"Deducted: <b>{amount} Points</b>\n"
             f"Remaining: <b>{user_points - amount:.2f} Points</b>\n"
@@ -1983,7 +2576,7 @@ async def pay_points_handler(event):
         # Refund on failure
         users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
         # Emoji ❌: 5273914604752216432
-        await event.edit(f"<tg-emoji emoji-id='5273914604752216432'>❌</tg-emoji> Activation failed. Points refunded. Contact support.", parse_mode="html")
+        await event.edit("❌ Activation failed. Points refunded. Contact support.", parse_mode="html")
 
 @bot.on(events.CallbackQuery(data=b"pay_method_crypto"))
 async def pay_crypto_inv_handler(event):
@@ -2012,7 +2605,7 @@ async def pay_crypto_inv_handler(event):
             old.cancel()
 
     # Emoji 🔄: 5375338737028841420
-    await event.edit(f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> Creating Invoice...", parse_mode="html")
+    await event.edit("🔄 Creating Invoice...", parse_mode="html")
 
     try:
         resp = await asyncio.to_thread(create_invoice, amount)
@@ -2044,8 +2637,8 @@ async def pay_crypto_inv_handler(event):
     
     # Emoji ✅: 5039793437776282663
     text = (
-        f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Product: <b>{prod_name}</b>\n"
-        f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Plan: <b>{label}</b>\n"
+        f"✅ Product: <b>{prod_name}</b>\n"
+        f"✅ Plan: <b>{label}</b>\n"
         f"Amount: <b>{amount} USDT</b>\n"
         f"Duration: <b>{hours} Hours</b>\n\n"
         "Click <b>Pay</b> to open OxaPay.\n"
@@ -2105,17 +2698,18 @@ async def broadcast_handler(event):
             logger.error(f"Broadcast fail to {uid}: {e}")
 
     # Emoji ✅: 5039793437776282663 (HTML by default if no parse_mode specified, but works best with explicit tag)
-    await event.reply(f"<tg-emoji emoji-id='5039793437776282663'>✅</tg-emoji> Broadcast sent to {total} users.", parse_mode="html")
+    await event.reply(f"✅ Broadcast sent to {total} users.", parse_mode="html")
 
 # ================== MAIN ==================
 
 def main():
-    logger.info("Stake Payment Bot (Multi-Product with API Claimer) is running...")
+    logger.info("Stake Payment Bot (Multi-Product with API Claimer + Auto-Delete + Bulk Points) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
+        loop.create_task(check_deployed_containers_loop())
     except Exception as e:
-        logger.exception(f"Failed to schedule active users checker: {e}")
+        logger.exception(f"Failed to schedule background tasks: {e}")
 
     bot.run_until_disconnected()
 
