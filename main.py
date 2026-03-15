@@ -55,6 +55,9 @@ users_col = db["users"]
 # Track deployed app names to avoid conflicts
 deployed_apps_col = db["deployed_apps"]
 
+# Track API subscriptions for better management
+api_subscriptions_col = db["api_subscriptions"]
+
 # Bot owner
 BOT_OWNER_ID = 7618467489
 
@@ -550,18 +553,42 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token)
                         
                         if deploy_ok:
-                            # Save deployed app info to DB
+                            expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+                            web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
+                            
+                            # Save deployed app info to DB with comprehensive tracking
                             deployed_apps_col.insert_one({
                                 "user_id": user_id,
                                 "username": username_clean,
                                 "app_name": app_name,
                                 "session_token": session_token,
                                 "deployed_at": datetime.now(timezone.utc),
-                                "expires_at": datetime.now(timezone.utc) + timedelta(hours=hours),
-                                "status": "active"
+                                "expires_at": expires_at,
+                                "status": "active",
+                                "web_url": web_url,
+                                "region": API_CLAIMER_REGION,
+                                "product_type": "api_claimer"
                             })
                             
-                            web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
+                            # Also save to api_subscriptions collection for comprehensive tracking
+                            api_subscriptions_col.update_one(
+                                {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
+                                {
+                                    "$set": {
+                                        "user_id": user_id,
+                                        "username": username_clean,
+                                        "product_type": "api_claimer",
+                                        "app_name": app_name,
+                                        "api_url": api_url,
+                                        "expires_at": expires_at,
+                                        "status": "active",
+                                        "session_token": session_token,
+                                        "web_url": web_url,
+                                        "updated_at": datetime.now(timezone.utc)
+                                    }
+                                },
+                                upsert=True
+                            )
                             
                             deploy_message = (
                                 f"\n\n✅ <b>Container Deployed!</b>\n"
@@ -721,7 +748,7 @@ def _parse_iso_datetime(s: str):
 
 async def check_active_users_loop():
     await asyncio.sleep(5)
-    logger.info("Active users reminder loop started (Multi-Product API).")
+    logger.info("Active users reminder loop started (Multi-Product API with Container Cleanup).")
     
     api_sources = [
         {"name": "Code Claimer", "url": CLAIMER_API_URL},
@@ -731,6 +758,9 @@ async def check_active_users_loop():
 
     while True:
         try:
+            now = datetime.now(timezone.utc)
+            
+            # === PHASE 1: CHECK ACTIVE USERS FROM API FOR REMINDERS ===
             for source in api_sources:
                 api_name = source["name"]
                 api_url = source["url"]
@@ -742,7 +772,6 @@ async def check_active_users_loop():
 
                 users = data.get("active_users") if isinstance(data, dict) else None
                 if isinstance(users, list):
-                    now = datetime.now(timezone.utc)
                     for entry in users:
                         try:
                             expires_raw = entry.get("expires")
@@ -796,129 +825,58 @@ async def check_active_users_loop():
                                     _reminder_sent[reminder_key] = True
                                 except Exception as e:
                                     logger.exception(f"Failed to send reminder to {username_clean}: {e}")
-                                    
-                            # === AUTO-DELETE EXPIRED API CLAIMER CONTAINERS ===
-                            if minutes_left <= 0 and api_name == "API Claimer":
-                                # Check if this expired user has a deployed container
-                                cleanup_key = f"{username_clean.lower()}_{expires_dt.isoformat()}"
-                                
-                                if _expired_cleanup_sent.get(cleanup_key):
-                                    continue
-                                
-                                deployed_app = deployed_apps_col.find_one({
-                                    "username": username_clean,
-                                    "status": "active"
-                                })
-                                
-                                if deployed_app:
-                                    app_name = deployed_app.get("app_name")
-                                    user_id = deployed_app.get("user_id")
-                                    
-                                    if app_name:
-                                        logger.info(f"[AUTO_DELETE] Subscription expired for @{username_clean}, deleting container: {app_name}")
-                                        
-                                        # Delete the container
-                                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                                        
-                                        if delete_ok:
-                                            # Update DB
-                                            deployed_apps_col.update_one(
-                                                {"app_name": app_name},
-                                                {"$set": {
-                                                    "status": "expired_deleted",
-                                                    "deleted_at": datetime.now(timezone.utc),
-                                                    "deletion_reason": "subscription_expired"
-                                                }}
-                                            )
-                                            
-                                            # Notify user
-                                            if user_id:
-                                                try:
-                                                    await bot.send_message(
-                                                        user_id,
-                                                        f"⏰ <b>Subscription Expired</b>\n\n"
-                                                        f"Your API Claimer subscription has expired.\n"
-                                                        f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
-                                                        f"Renew to get a new container deployed.",
-                                                        parse_mode="html",
-                                                        buttons=[
-                                                            [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
-                                                            [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
-                                                        ]
-                                                    )
-                                                except Exception as e:
-                                                    logger.error(f"Failed to notify user {user_id} about expired container: {e}")
-                                            
-                                            logger.info(f"[AUTO_DELETE] Successfully deleted expired container: {app_name}")
-                                        else:
-                                            logger.error(f"[AUTO_DELETE] Failed to delete container {app_name}: {delete_resp}")
-                                    
-                                    _expired_cleanup_sent[cleanup_key] = True
                                             
                         except Exception as ee:
                             logger.exception(f"Error processing active user entry: {ee}")
-        
-        except Exception as e:
-            logger.exception(f"check_active_users_loop error: {e}")
-
-        await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
-
-# Also run a separate loop for checking deployed containers directly
-async def check_deployed_containers_loop():
-    """
-    Secondary loop to check deployed containers against subscription status.
-    This ensures containers are deleted even if the main loop misses them.
-    """
-    await asyncio.sleep(30)  # Start after main loop
-    logger.info("Deployed containers cleanup loop started.")
-    
-    while True:
-        try:
-            now = datetime.now(timezone.utc)
             
-            # Find all active deployed containers
-            active_containers = deployed_apps_col.find({"status": "active"})
-            
-            for container in active_containers:
-                try:
-                    app_name = container.get("app_name")
-                    username = container.get("username")
-                    user_id = container.get("user_id")
-                    expires_at = container.get("expires_at")
-                    
-                    if not expires_at or not app_name:
-                        continue
-                    
-                    # Parse expires_at if it's a string
-                    if isinstance(expires_at, str):
-                        expires_at = _parse_iso_datetime(expires_at)
-                    
-                    if not expires_at:
-                        continue
-
-                    # Ensure expires_at has timezone info (FIX)
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-                    # Check if expired
-                    if now > expires_at:
-                        cleanup_key = f"{username.lower()}_{expires_at.isoformat()}_container"
+            # === PHASE 2: CHECK DEPLOYED CONTAINERS FOR EXPIRATION ===
+            # This is the critical fix - check deployed_apps_col directly for expired containers
+            try:
+                # Find all active deployed containers that have expired
+                expired_containers = deployed_apps_col.find({
+                    "status": "active",
+                    "expires_at": {"$lte": now}
+                })
+                
+                for container in expired_containers:
+                    try:
+                        app_name = container.get("app_name")
+                        username = container.get("username")
+                        user_id = container.get("user_id")
+                        expires_at = container.get("expires_at")
+                        
+                        if not app_name:
+                            continue
+                        
+                        # Create unique cleanup key
+                        cleanup_key = f"container_{app_name}"
                         
                         if _expired_cleanup_sent.get(cleanup_key):
                             continue
                         
-                        logger.info(f"[CONTAINER_CLEANUP] Container expired: {app_name} for @{username}")
+                        logger.info(f"[CONTAINER_CLEANUP] Found expired container: {app_name} for @{username}")
                         
                         # Delete the container
                         delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
                         
                         if delete_ok:
+                            # Update deployed_apps_col
                             deployed_apps_col.update_one(
                                 {"app_name": app_name},
                                 {"$set": {
                                     "status": "expired_deleted",
                                     "deleted_at": now,
-                                    "deletion_reason": "container_cleanup_loop"
+                                    "deletion_reason": "subscription_expired"
+                                }}
+                            )
+                            
+                            # Update api_subscriptions_col
+                            api_subscriptions_col.update_one(
+                                {"app_name": app_name},
+                                {"$set": {
+                                    "status": "expired_deleted",
+                                    "deleted_at": now,
+                                    "deletion_reason": "subscription_expired"
                                 }}
                             )
                             
@@ -938,19 +896,25 @@ async def check_deployed_containers_loop():
                                         ]
                                     )
                                 except Exception as e:
-                                    logger.error(f"Failed to notify user {user_id}: {e}")
+                                    logger.error(f"Failed to notify user {user_id} about expired container: {e}")
+                            
+                            logger.info(f"[CONTAINER_CLEANUP] Successfully deleted expired container: {app_name}")
                         else:
-                            logger.error(f"[CONTAINER_CLEANUP] Failed to delete {app_name}: {delete_resp}")
+                            logger.error(f"[CONTAINER_CLEANUP] Failed to delete container {app_name}: {delete_resp}")
                         
+                        # Mark as processed regardless of success to avoid retry loops
                         _expired_cleanup_sent[cleanup_key] = True
+                            
+                    except Exception as e:
+                        logger.exception(f"Error processing expired container: {e}")
                         
-                except Exception as e:
-                    logger.exception(f"Error processing container: {e}")
+            except Exception as e:
+                logger.exception(f"Error in container cleanup phase: {e}")
         
         except Exception as e:
-            logger.exception(f"check_deployed_containers_loop error: {e}")
-        
-        await asyncio.sleep(300)  # Check every 5 minutes
+            logger.exception(f"check_active_users_loop error: {e}")
+
+        await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
 
 # ================== ADD POINTS COMMAND ==================
 
@@ -1784,6 +1748,16 @@ async def terminate_execute_handler(event):
                                 "deletion_reason": "user_terminated"
                             }}
                         )
+                        
+                        # Also update api_subscriptions_col
+                        api_subscriptions_col.update_one(
+                            {"app_name": app_name},
+                            {"$set": {
+                                "status": "terminated",
+                                "terminated_at": datetime.now(timezone.utc),
+                                "deletion_reason": "user_terminated"
+                            }}
+                        )
             except Exception as e:
                 logger.error(f"Failed to delete deployed app during termination: {e}")
         
@@ -2036,7 +2010,7 @@ async def text_input_handler(event):
             
         except Exception as e:
             logger.exception("Rename process failed.")
-            # Emoji ❌: 5273914604752216432
+            # Emoji ❌: 5273914604216432
             await event.respond(f"❌ Error during rename: {e}", parse_mode="html")
         
         return
@@ -2524,18 +2498,42 @@ async def pay_points_handler(event):
                 deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token)
                 
                 if deploy_ok:
-                    # Save deployed app info to DB
+                    expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+                    web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
+                    
+                    # Save deployed app info to DB with comprehensive tracking
                     deployed_apps_col.insert_one({
                         "user_id": user_id,
                         "username": username_clean,
                         "app_name": app_name,
                         "session_token": session_token,
                         "deployed_at": datetime.now(timezone.utc),
-                        "expires_at": datetime.now(timezone.utc) + timedelta(hours=hours),
-                        "status": "active"
+                        "expires_at": expires_at,
+                        "status": "active",
+                        "web_url": web_url,
+                        "region": API_CLAIMER_REGION,
+                        "product_type": "api_claimer"
                     })
                     
-                    web_url = deploy_resp.get("web_url", f"https://{app_name}.herokuapp.com")
+                    # Also save to api_subscriptions collection for comprehensive tracking
+                    api_subscriptions_col.update_one(
+                        {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
+                        {
+                            "$set": {
+                                "user_id": user_id,
+                                "username": username_clean,
+                                "product_type": "api_claimer",
+                                "app_name": app_name,
+                                "api_url": api_url,
+                                "expires_at": expires_at,
+                                "status": "active",
+                                "session_token": session_token,
+                                "web_url": web_url,
+                                "updated_at": datetime.now(timezone.utc)
+                            }
+                        },
+                        upsert=True
+                    )
                     
                     deploy_message = (
                         f"\n\n✅ <b>Container Deployed!</b>\n"
@@ -2716,8 +2714,8 @@ def main():
     logger.info("Stake Payment Bot (Multi-Product with API Claimer + Auto-Delete + Bulk Points) is running...")
     try:
         loop = asyncio.get_event_loop()
+        # Only start the main loop - container cleanup is now integrated
         loop.create_task(check_active_users_loop())
-        loop.create_task(check_deployed_containers_loop())
     except Exception as e:
         logger.exception(f"Failed to schedule background tasks: {e}")
 
