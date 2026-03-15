@@ -66,8 +66,8 @@ OXAPAY_API_KEY = "SNJEE3-MOEI0B-ZR0FW4-UWSLXH"
 OXAPAY_API_BASE = "https://api.oxapay.com"
 
 # Active users checker settings
-ACTIVE_USERS_POLL_INTERVAL = 300  # seconds between active_users polls (5 minutes)
-REMINDER_THRESHOLD_MINUTES = 60   # notify when <= 60 minutes remain
+ACTIVE_USERS_POLL_INTERVAL = 60   # seconds between polls (1 minute)
+REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 
 # --- PRICING PLANS ---
 
@@ -130,11 +130,14 @@ user_sessions = {}
 user_tasks = {}
 bot_username = None # Will be set on startup
 
-# keep track of reminders sent to avoid duplicates: { username_lc: expires_iso }
+# keep track of reminders sent to avoid duplicates: { key: True }
 _reminder_sent = {}
 
-# Track expired cleanup to avoid duplicates
+# Track expired cleanup to avoid duplicates: { key: True }
 _expired_cleanup_sent = {}
+
+# Track pre-expiry container deletion to avoid duplicates: { key: True }
+_pre_expiry_deletion_sent = {}
 
 # ================== OXAPAY HELPERS ==================
 
@@ -748,7 +751,7 @@ def _parse_iso_datetime(s: str):
 
 async def check_active_users_loop():
     await asyncio.sleep(5)
-    logger.info("Active users reminder loop started (Multi-Product API with Container Cleanup).")
+    logger.info("Active users reminder loop started (60s interval, 10min reminder, auto-delete containers).")
     
     api_sources = [
         {"name": "Code Claimer", "url": CLAIMER_API_URL},
@@ -760,7 +763,7 @@ async def check_active_users_loop():
         try:
             now = datetime.now(timezone.utc)
             
-            # === PHASE 1: CHECK ACTIVE USERS FROM API FOR REMINDERS ===
+            # === PHASE 1: CHECK ACTIVE USERS FROM API FOR REMINDERS AND PRE-EXPIRY CLEANUP ===
             for source in api_sources:
                 api_name = source["name"]
                 api_url = source["url"]
@@ -786,130 +789,206 @@ async def check_active_users_loop():
                                 expires_dt = expires_dt.replace(tzinfo=timezone.utc)
 
                             time_left = expires_dt - now
-                            minutes_left = time_left.total_seconds() / 60
+                            seconds_left = time_left.total_seconds()
+                            minutes_left = seconds_left / 60
 
                             username_clean = username.lstrip("@").strip()
                             
-                            # Unique key for reminder: username + product + expire_time
-                            reminder_key = f"{username_clean.lower()}_{api_name}_{expires_dt.isoformat()}"
+                            # Get user info from DB
+                            rec = users_col.find_one({"username": username_clean})
+                            user_id = rec.get("user_id") if rec else None
 
-                            if minutes_left <= REMINDER_THRESHOLD_MINUTES and minutes_left > 0:
-                                previous = _reminder_sent.get(reminder_key)
-                                if previous:
-                                    continue
+                            # === REMINDER: 10 minutes left ===
+                            if minutes_left <= REMINDER_THRESHOLD_MINUTES and minutes_left > 1:
+                                # Unique key for reminder based on username + product + expire_time
+                                reminder_key = f"reminder_{username_clean.lower()}_{api_name}_{expires_dt.isoformat()}"
+                                
+                                if not _reminder_sent.get(reminder_key):
+                                    if user_id:
+                                        try:
+                                            rem_text = (
+                                                f"⏳ <b>Subscription ending soon</b>\n\n"
+                                                f"Product: <b>{api_name}</b>\n"
+                                                f"User: <code>@{username_clean}</code>\n"
+                                                f"Expires: {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                                                f"Time left: ~{int(minutes_left)} mins.\n\n"
+                                                f"Renew now to avoid interruption."
+                                            )
+                                            buttons = [
+                                                [Button.inline("💳 Renew Now", b"buy_sub")],
+                                                [Button.url("🛠 Support", SUPPORT_CHAT_LINK)],
+                                            ]
+                                            await bot.send_message(user_id, rem_text, parse_mode="html", buttons=buttons)
+                                            logger.info(f"[REMINDER] Sent to @{username_clean} for {api_name} ({int(minutes_left)} mins left)")
+                                            _reminder_sent[reminder_key] = True
+                                        except Exception as e:
+                                            logger.exception(f"Failed to send reminder to {username_clean}: {e}")
 
-                                rec = users_col.find_one({"username": username_clean})
-                                if not rec:
-                                    continue
-
-                                user_id = rec.get("user_id")
-                                if not user_id:
-                                    continue
-
-                                try:
-                                    # Emoji: ⏳
-                                    rem_text = (
-                                        f"⏳ <b>Subscription ending soon</b>\n\n"
-                                        f"Product: <b>{api_name}</b>\n"
-                                        f"User: <code>@{username_clean}</code>\n"
-                                        f"Expires: {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                                        f"Time left: ~{int(minutes_left)} mins.\n\n"
-                                        f"Renew now to avoid interruption."
-                                    )
-                                    buttons = [
-                                        [Button.inline("💳 Renew Now", b"buy_sub")],
-                                        [Button.url("🛠 Support", SUPPORT_CHAT_LINK)],
-                                    ]
-                                    await bot.send_message(user_id, rem_text, parse_mode="html", buttons=buttons)
-                                    logger.info(f"Sent reminder to @{username_clean} for {api_name}")
-                                    _reminder_sent[reminder_key] = True
-                                except Exception as e:
-                                    logger.exception(f"Failed to send reminder to {username_clean}: {e}")
+                            # === PRE-EXPIRY CONTAINER DELETION: < 60 seconds left ===
+                            # Delete container just before expiry so user gets the notification
+                            if api_name == "API Claimer" and seconds_left <= 60 and seconds_left > -300:
+                                # Find the deployed container for this user
+                                deployed_app = deployed_apps_col.find_one({
+                                    "username": username_clean,
+                                    "status": "active"
+                                })
+                                
+                                if deployed_app:
+                                    app_name = deployed_app.get("app_name")
+                                    container_user_id = deployed_app.get("user_id")
+                                    
+                                    if app_name:
+                                        # Unique key for this deletion
+                                        deletion_key = f"pre_expiry_{app_name}"
+                                        
+                                        if not _pre_expiry_deletion_sent.get(deletion_key):
+                                            logger.info(f"[PRE_EXPIRY_DELETE] Subscription about to expire for @{username_clean}, deleting container: {app_name}")
+                                            
+                                            # Delete the container
+                                            delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
+                                            
+                                            if delete_ok:
+                                                # Update deployed_apps_col
+                                                deployed_apps_col.update_one(
+                                                    {"app_name": app_name},
+                                                    {"$set": {
+                                                        "status": "expired_deleted",
+                                                        "deleted_at": now,
+                                                        "deletion_reason": "subscription_expired"
+                                                    }}
+                                                )
+                                                
+                                                # Update api_subscriptions_col
+                                                api_subscriptions_col.update_one(
+                                                    {"app_name": app_name},
+                                                    {"$set": {
+                                                        "status": "expired_deleted",
+                                                        "deleted_at": now,
+                                                        "deletion_reason": "subscription_expired"
+                                                    }}
+                                                )
+                                                
+                                                # Notify user
+                                                notify_user_id = container_user_id or user_id
+                                                if notify_user_id:
+                                                    try:
+                                                        await bot.send_message(
+                                                            notify_user_id,
+                                                            f"⏰ <b>Subscription Expired</b>\n\n"
+                                                            f"Your API Claimer subscription has expired.\n"
+                                                            f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
+                                                            f"Renew to get a new container deployed.",
+                                                            parse_mode="html",
+                                                            buttons=[
+                                                                [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
+                                                                [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
+                                                            ]
+                                                        )
+                                                    except Exception as e:
+                                                        logger.error(f"Failed to notify user {notify_user_id} about expired container: {e}")
+                                                
+                                                logger.info(f"[PRE_EXPIRY_DELETE] Successfully deleted container: {app_name}")
+                                            else:
+                                                logger.error(f"[PRE_EXPIRY_DELETE] Failed to delete container {app_name}: {delete_resp}")
+                                            
+                                            # Mark as processed to avoid duplicates
+                                            _pre_expiry_deletion_sent[deletion_key] = True
                                             
                         except Exception as ee:
                             logger.exception(f"Error processing active user entry: {ee}")
             
-            # === PHASE 2: CHECK DEPLOYED CONTAINERS FOR EXPIRATION ===
-            # This is the critical fix - check deployed_apps_col directly for expired containers
+            # === PHASE 2: CHECK DEPLOYED CONTAINERS FROM DATABASE (FALLBACK) ===
+            # This catches any containers that might have been missed by Phase 1
             try:
-                # Find all active deployed containers that have expired
-                expired_containers = deployed_apps_col.find({
-                    "status": "active",
-                    "expires_at": {"$lte": now}
-                })
+                # Find all active deployed containers
+                active_containers = deployed_apps_col.find({"status": "active"})
                 
-                for container in expired_containers:
+                for container in active_containers:
                     try:
                         app_name = container.get("app_name")
                         username = container.get("username")
-                        user_id = container.get("user_id")
+                        container_user_id = container.get("user_id")
                         expires_at = container.get("expires_at")
                         
-                        if not app_name:
+                        if not app_name or not expires_at:
                             continue
                         
-                        # Create unique cleanup key
-                        cleanup_key = f"container_{app_name}"
+                        # Parse expires_at if it's a string
+                        if isinstance(expires_at, str):
+                            expires_at = _parse_iso_datetime(expires_at)
                         
-                        if _expired_cleanup_sent.get(cleanup_key):
+                        if not expires_at:
                             continue
+
+                        # Ensure expires_at has timezone info
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+                        time_left = expires_at - now
+                        seconds_left = time_left.total_seconds()
                         
-                        logger.info(f"[CONTAINER_CLEANUP] Found expired container: {app_name} for @{username}")
-                        
-                        # Delete the container
-                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                        
-                        if delete_ok:
-                            # Update deployed_apps_col
-                            deployed_apps_col.update_one(
-                                {"app_name": app_name},
-                                {"$set": {
-                                    "status": "expired_deleted",
-                                    "deleted_at": now,
-                                    "deletion_reason": "subscription_expired"
-                                }}
-                            )
+                        # Delete if expired or about to expire (< 60 seconds)
+                        if seconds_left <= 60:
+                            # Unique key for this deletion
+                            deletion_key = f"db_cleanup_{app_name}"
                             
-                            # Update api_subscriptions_col
-                            api_subscriptions_col.update_one(
-                                {"app_name": app_name},
-                                {"$set": {
-                                    "status": "expired_deleted",
-                                    "deleted_at": now,
-                                    "deletion_reason": "subscription_expired"
-                                }}
-                            )
-                            
-                            # Notify user
-                            if user_id:
-                                try:
-                                    await bot.send_message(
-                                        user_id,
-                                        f"⏰ <b>Subscription Expired</b>\n\n"
-                                        f"Your API Claimer subscription has expired.\n"
-                                        f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
-                                        f"Renew to get a new container deployed.",
-                                        parse_mode="html",
-                                        buttons=[
-                                            [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
-                                            [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
-                                        ]
+                            if not _expired_cleanup_sent.get(deletion_key):
+                                logger.info(f"[DB_CLEANUP] Found expired/soon-to-expire container: {app_name} for @{username}")
+                                
+                                # Delete the container
+                                delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
+                                
+                                if delete_ok:
+                                    # Update deployed_apps_col
+                                    deployed_apps_col.update_one(
+                                        {"app_name": app_name},
+                                        {"$set": {
+                                            "status": "expired_deleted",
+                                            "deleted_at": now,
+                                            "deletion_reason": "subscription_expired"
+                                        }}
                                     )
-                                except Exception as e:
-                                    logger.error(f"Failed to notify user {user_id} about expired container: {e}")
-                            
-                            logger.info(f"[CONTAINER_CLEANUP] Successfully deleted expired container: {app_name}")
-                        else:
-                            logger.error(f"[CONTAINER_CLEANUP] Failed to delete container {app_name}: {delete_resp}")
-                        
-                        # Mark as processed regardless of success to avoid retry loops
-                        _expired_cleanup_sent[cleanup_key] = True
-                            
+                                    
+                                    # Update api_subscriptions_col
+                                    api_subscriptions_col.update_one(
+                                        {"app_name": app_name},
+                                        {"$set": {
+                                            "status": "expired_deleted",
+                                            "deleted_at": now,
+                                            "deletion_reason": "subscription_expired"
+                                        }}
+                                    )
+                                    
+                                    # Notify user
+                                    if container_user_id:
+                                        try:
+                                            await bot.send_message(
+                                                container_user_id,
+                                                f"⏰ <b>Subscription Expired</b>\n\n"
+                                                f"Your API Claimer subscription has expired.\n"
+                                                f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
+                                                f"Renew to get a new container deployed.",
+                                                parse_mode="html",
+                                                buttons=[
+                                                    [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
+                                                    [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
+                                                ]
+                                            )
+                                        except Exception as e:
+                                            logger.error(f"Failed to notify user {container_user_id} about expired container: {e}")
+                                    
+                                    logger.info(f"[DB_CLEANUP] Successfully deleted container: {app_name}")
+                                else:
+                                    logger.error(f"[DB_CLEANUP] Failed to delete container {app_name}: {delete_resp}")
+                                
+                                # Mark as processed
+                                _expired_cleanup_sent[deletion_key] = True
+                                    
                     except Exception as e:
-                        logger.exception(f"Error processing expired container: {e}")
+                        logger.exception(f"Error processing container from DB: {e}")
                         
             except Exception as e:
-                logger.exception(f"Error in container cleanup phase: {e}")
+                logger.exception(f"Error in DB container cleanup phase: {e}")
         
         except Exception as e:
             logger.exception(f"check_active_users_loop error: {e}")
@@ -2010,7 +2089,7 @@ async def text_input_handler(event):
             
         except Exception as e:
             logger.exception("Rename process failed.")
-            # Emoji ❌: 5273914604216432
+            # Emoji ❌: 5273914604752216432
             await event.respond(f"❌ Error during rename: {e}", parse_mode="html")
         
         return
