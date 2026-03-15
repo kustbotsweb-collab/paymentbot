@@ -888,7 +888,11 @@ async def check_deployed_containers_loop():
                     
                     if not expires_at:
                         continue
-                    
+
+                    # Ensure expires_at has timezone info (FIX)
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
                     # Check if expired
                     if now > expires_at:
                         cleanup_key = f"{username.lower()}_{expires_at.isoformat()}_container"
@@ -940,7 +944,6 @@ async def check_deployed_containers_loop():
             logger.exception(f"check_deployed_containers_loop error: {e}")
         
         await asyncio.sleep(300)  # Check every 5 minutes
-
 
 # ================== ADD POINTS COMMAND ==================
 
