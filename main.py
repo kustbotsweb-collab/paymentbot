@@ -168,7 +168,7 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
             "duration": hours
         }
         url = f"{api_url}/auth" 
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params, timeout=120)
         r.raise_for_status()
         logger.info(f"[ACTIVATE] Activated for {username_with_at} on {api_url}. Response: {r.text}")
         return True
