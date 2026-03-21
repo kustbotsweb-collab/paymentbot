@@ -1303,24 +1303,26 @@ async def extend_time_handler(event):
     if product_arg and product_arg not in valid_products:
         return await event.reply(f"❌ Invalid product. Valid options: {', '.join(valid_products)}", parse_mode="html")
     
-    # Find user
+    # Find user - FIXED: Allow extending for any username, not just those in DB
     target_user_id = None
     target_username = None
     
     if target_arg.isdigit():
+        # If argument is a user ID, look up in DB
         target_user_id = int(target_arg)
         user_record = users_col.find_one({"user_id": target_user_id})
         if user_record:
             target_username = user_record.get("username")
+        # If no username found in DB, we can't proceed with just a user_id
+        if not target_username:
+            return await event.reply(f"❌ User ID `{target_user_id}` found but no username set in database. Please use username instead.", parse_mode="html")
     else:
-        clean_username = target_arg.lstrip("@")
-        user_record = users_col.find_one({"username": clean_username})
+        # If argument is a username, use it directly (no need to be in DB)
+        target_username = target_arg.lstrip("@")
+        # Try to find user_id in DB for notification purposes (optional)
+        user_record = users_col.find_one({"username": target_username})
         if user_record:
             target_user_id = user_record.get("user_id")
-            target_username = clean_username
-    
-    if not target_username:
-        return await event.reply(f"❌ User `{target_arg}` not found or has no username set.", parse_mode="html")
     
     # Show processing message
     status_msg = await event.reply(f"🔄 Extending subscription for <code>@{target_username}</code>...", parse_mode="html")
@@ -1395,7 +1397,7 @@ async def extend_time_handler(event):
     )
     result_text += "\n".join(results)
     
-    # Try to notify the user
+    # Try to notify the user (only if we have their user_id)
     if target_user_id:
         try:
             # Get new expiry from API for notification
@@ -1419,6 +1421,8 @@ async def extend_time_handler(event):
             result_text += "\n\n✅ User notified successfully."
         except Exception as e:
             result_text += f"\n\n⚠️ Could not notify user: {str(e)[:50]}"
+    else:
+        result_text += "\n\n<i>User not in bot database - notification skipped.</i>"
     
     await status_msg.edit(result_text, parse_mode="html")
 
