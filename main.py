@@ -1077,6 +1077,351 @@ async def add_points_handler(event):
         # Markdown Emoji for ❌
         await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
 
+# ================== API CLAIMER STATS COMMAND (OWNER ONLY) ==================
+
+@bot.on(events.NewMessage(pattern=r"^/apicstats$"))
+async def apicstats_handler(event):
+    """
+    Owner-only command to view all API Claimer users stats.
+    Shows: Active users, their remaining time, container status, etc.
+    """
+    if event.sender_id != BOT_OWNER_ID:
+        return
+
+    await event.reply("📊 <b>Fetching API Claimer Stats...</b>", parse_mode="html")
+
+    now = datetime.now(timezone.utc)
+    
+    # === 1. FETCH FROM API ===
+    api_data = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
+    
+    api_users = []
+    if api_data and isinstance(api_data, dict):
+        api_users = api_data.get("active_users", [])
+    
+    # === 2. FETCH FROM DATABASE (Deployed Containers) ===
+    db_containers = list(deployed_apps_col.find({"product_type": "api_claimer"}))
+    
+    # === 3. BUILD STATS REPORT ===
+    
+    # Count totals
+    total_api_users = len(api_users)
+    total_db_containers = len(db_containers)
+    active_containers = len([c for c in db_containers if c.get("status") == "active"])
+    expired_containers = len([c for c in db_containers if c.get("status") in ["expired_deleted", "terminated"]])
+    
+    # Build user details
+    report_lines = []
+    report_lines.append("<b>📊 API CLAIMER STATS</b>")
+    report_lines.append(f"📅 <i>Generated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}</i>")
+    report_lines.append("")
+    report_lines.append(f"<b>📈 Summary:</b>")
+    report_lines.append(f"• Active on API: <b>{total_api_users}</b>")
+    report_lines.append(f"• Total Containers in DB: <b>{total_db_containers}</b>")
+    report_lines.append(f"• Active Containers: <b>{active_containers}</b>")
+    report_lines.append(f"• Expired/Terminated: <b>{expired_containers}</b>")
+    report_lines.append("")
+    report_lines.append("<b>👥 Active Users (from API):</b>")
+    report_lines.append("━━━━━━━━━━━━━━━━━━━━")
+    
+    if not api_users:
+        report_lines.append("<i>No active users found on API.</i>")
+    else:
+        for idx, user in enumerate(api_users, 1):
+            username = user.get("username", "Unknown")
+            expires_raw = user.get("expires")
+            
+            if expires_raw:
+                expires_dt = _parse_iso_datetime(expires_raw)
+                if expires_dt:
+                    if expires_dt.tzinfo is None:
+                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    
+                    time_left = expires_dt - now
+                    total_seconds = time_left.total_seconds()
+                    
+                    if total_seconds > 0:
+                        hours_left = total_seconds / 3600
+                        if hours_left >= 24:
+                            time_str = f"{hours_left/24:.1f} days"
+                        elif hours_left >= 1:
+                            time_str = f"{hours_left:.1f} hours"
+                        else:
+                            time_str = f"{total_seconds/60:.0f} mins"
+                        
+                        status_emoji = "🟢"
+                    else:
+                        time_str = "EXPIRED"
+                        status_emoji = "🔴"
+                    
+                    expires_str = expires_dt.strftime('%Y-%m-%d %H:%M UTC')
+                else:
+                    time_str = "N/A"
+                    expires_str = "Invalid date"
+                    status_emoji = "⚪"
+            else:
+                time_str = "N/A"
+                expires_str = "No expiry"
+                status_emoji = "⚪"
+            
+            # Check for container in DB
+            container_info = ""
+            clean_username = username.lstrip("@") if username else ""
+            container = deployed_apps_col.find_one({"username": clean_username, "product_type": "api_claimer"})
+            if container:
+                container_status = container.get("status", "unknown")
+                app_name = container.get("app_name", "N/A")
+                if container_status == "active":
+                    container_info = f" | 📦 {app_name}"
+                else:
+                    container_info = f" | 📦 {app_name} ({container_status})"
+            
+            report_lines.append(f"{status_emoji} <code>@{username.lstrip('@')}</code>")
+            report_lines.append(f"   ⏱ {time_str} left | Expires: {expires_str}{container_info}")
+    
+    # === 4. ADD DB-ONLY CONTAINERS (not in API but in DB) ===
+    api_usernames = set(u.get("username", "").lower().lstrip("@") for u in api_users)
+    
+    db_only_containers = []
+    for container in db_containers:
+        container_username = container.get("username", "").lower()
+        if container_username not in api_usernames and container.get("status") == "active":
+            db_only_containers.append(container)
+    
+    if db_only_containers:
+        report_lines.append("")
+        report_lines.append("<b>📦 DB Containers (Not in API):</b>")
+        report_lines.append("━━━━━━━━━━━━━━━━━━━━")
+        for container in db_only_containers:
+            app_name = container.get("app_name", "N/A")
+            username = container.get("username", "Unknown")
+            status = container.get("status", "unknown")
+            deployed_at = container.get("deployed_at")
+            expires_at = container.get("expires_at")
+            
+            deployed_str = deployed_at.strftime('%Y-%m-%d') if deployed_at else "N/A"
+            expires_str = expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else "N/A"
+            
+            if expires_at:
+                if isinstance(expires_at, str):
+                    expires_at = _parse_iso_datetime(expires_at)
+                if expires_at:
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    time_left = expires_at - now
+                    total_seconds = time_left.total_seconds()
+                    if total_seconds > 0:
+                        status_emoji = "🟡"
+                    else:
+                        status_emoji = "🔴"
+                else:
+                    status_emoji = "⚪"
+            else:
+                status_emoji = "⚪"
+            
+            report_lines.append(f"{status_emoji} <code>@{username}</code>")
+            report_lines.append(f"   📦 {app_name} | Status: {status}")
+            report_lines.append(f"   Deployed: {deployed_str} | Expires: {expires_str}")
+    
+    # Send report (split if too long)
+    full_report = "\n".join(report_lines)
+    
+    # Telegram has a 4096 char limit
+    if len(full_report) <= 4096:
+        await event.reply(full_report, parse_mode="html")
+    else:
+        # Split into chunks
+        chunks = []
+        current_chunk = ""
+        for line in report_lines:
+            if len(current_chunk) + len(line) + 1 > 4000:
+                chunks.append(current_chunk)
+                current_chunk = line
+            else:
+                if current_chunk:
+                    current_chunk += "\n" + line
+                else:
+                    current_chunk = line
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                await event.reply(chunk, parse_mode="html")
+            else:
+                await event.reply(f"<b>📊 API Claimer Stats (continued)</b>\n\n{chunk}", parse_mode="html")
+
+# ================== EXTEND TIME COMMAND (OWNER ONLY) ==================
+
+@bot.on(events.NewMessage(pattern=r"^/extend\s"))
+async def extend_time_handler(event):
+    """
+    Owner-only command to extend subscription time for users.
+    Usage: /extend <username/userid> <hours> [product]
+    
+    Examples:
+    /extend @alice123 24 claimer
+    /extend @alice123 48 farmer
+    /extend @alice123 72 api_claimer
+    /extend 123456789 24 claimer
+    
+    If product not specified, extends on all products where user is active.
+    """
+    if event.sender_id != BOT_OWNER_ID:
+        return
+
+    # Parse arguments
+    args = event.message.message.split()
+    
+    if len(args) < 3:
+        return await event.reply(
+            "❌ <b>Usage:</b> <code>/extend &lt;username/userid&gt; &lt;hours&gt; [product]</code>\n\n"
+            "<b>Products:</b> <code>claimer</code>, <code>farmer</code>, <code>api_claimer</code>\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/extend @alice123 24 claimer</code>\n"
+            "<code>/extend @alice123 48 farmer</code>\n"
+            "<code>/extend @alice123 72 api_claimer</code>\n"
+            "<code>/extend 123456789 24 claimer</code>\n\n"
+            "<i>If product not specified, extends on all active products.</i>",
+            parse_mode="html"
+        )
+    
+    target_arg = args[1]
+    hours_arg = args[2]
+    product_arg = args[3].lower() if len(args) > 3 else None
+    
+    # Validate hours
+    try:
+        hours_to_add = int(hours_arg)
+        if hours_to_add <= 0:
+            raise ValueError("Hours must be positive")
+    except ValueError:
+        return await event.reply("❌ Invalid hours. Please enter a positive number.", parse_mode="html")
+    
+    # Validate product
+    valid_products = ["claimer", "farmer", "api_claimer"]
+    if product_arg and product_arg not in valid_products:
+        return await event.reply(f"❌ Invalid product. Valid options: {', '.join(valid_products)}", parse_mode="html")
+    
+    # Find user
+    target_user_id = None
+    target_username = None
+    
+    if target_arg.isdigit():
+        target_user_id = int(target_arg)
+        user_record = users_col.find_one({"user_id": target_user_id})
+        if user_record:
+            target_username = user_record.get("username")
+    else:
+        clean_username = target_arg.lstrip("@")
+        user_record = users_col.find_one({"username": clean_username})
+        if user_record:
+            target_user_id = user_record.get("user_id")
+            target_username = clean_username
+    
+    if not target_username:
+        return await event.reply(f"❌ User `{target_arg}` not found or has no username set.", parse_mode="html")
+    
+    # Show processing message
+    status_msg = await event.reply(f"🔄 Extending subscription for <code>@{target_username}</code>...", parse_mode="html")
+    
+    # Prepare results
+    results = []
+    
+    # Determine which products to extend
+    products_to_extend = [product_arg] if product_arg else valid_products
+    
+    for product in products_to_extend:
+        if product == "claimer":
+            api_url = CLAIMER_API_URL
+            product_name = "Code Claimer"
+        elif product == "farmer":
+            api_url = FARMER_API_URL
+            product_name = "Chat Farmer"
+        elif product == "api_claimer":
+            api_url = API_CLAIMER_AUTH_URL
+            product_name = "API Claimer"
+        else:
+            continue
+        
+        # Call activation API to extend
+        try:
+            success = await asyncio.to_thread(activate_subscription, f"@{target_username}", hours_to_add, api_url)
+            
+            if success:
+                results.append(f"✅ <b>{product_name}</b>: Extended by {hours_to_add} hours")
+                
+                # If API Claimer, also update the container expiry in DB
+                if product == "api_claimer":
+                    # Find active container and update expiry
+                    container = deployed_apps_col.find_one({"username": target_username, "status": "active"})
+                    if container:
+                        current_expires = container.get("expires_at")
+                        if current_expires:
+                            if isinstance(current_expires, str):
+                                current_expires = _parse_iso_datetime(current_expires)
+                            if current_expires:
+                                if current_expires.tzinfo is None:
+                                    current_expires = current_expires.replace(tzinfo=timezone.utc)
+                                # Extend from current expiry or now, whichever is later
+                                now = datetime.now(timezone.utc)
+                                if current_expires > now:
+                                    new_expires = current_expires + timedelta(hours=hours_to_add)
+                                else:
+                                    new_expires = now + timedelta(hours=hours_to_add)
+                                
+                                # Update both collections
+                                deployed_apps_col.update_one(
+                                    {"app_name": container.get("app_name")},
+                                    {"$set": {"expires_at": new_expires}}
+                                )
+                                api_subscriptions_col.update_one(
+                                    {"app_name": container.get("app_name")},
+                                    {"$set": {"expires_at": new_expires}}
+                                )
+                                results.append(f"   📦 Container expiry updated to: {new_expires.strftime('%Y-%m-%d %H:%M UTC')}")
+            else:
+                results.append(f"❌ <b>{product_name}</b>: Failed to extend")
+                
+        except Exception as e:
+            logger.exception(f"Error extending {product_name} for {target_username}: {e}")
+            results.append(f"❌ <b>{product_name}</b>: Error - {str(e)[:50]}")
+    
+    # Build result message
+    result_text = (
+        f"⏰ <b>Subscription Extension Result</b>\n\n"
+        f"User: <code>@{target_username}</code>\n"
+        f"Hours Added: <b>{hours_to_add}</b>\n\n"
+    )
+    result_text += "\n".join(results)
+    
+    # Try to notify the user
+    if target_user_id:
+        try:
+            # Get new expiry from API for notification
+            api_data = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL if product_arg == "api_claimer" else 
+                                                (FARMER_API_URL if product_arg == "farmer" else CLAIMER_API_URL))
+            new_expiry_str = "N/A"
+            if api_data and isinstance(api_data, dict):
+                for u in api_data.get("active_users", []):
+                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                        new_expiry_str = u.get("expires", "N/A")
+                        break
+            
+            await bot.send_message(
+                target_user_id,
+                f"🎉 <b>Subscription Extended!</b>\n\n"
+                f"Admin has extended your subscription.\n"
+                f"Hours Added: <b>{hours_to_add}</b>\n"
+                f"New Expiry: <code>{new_expiry_str}</code>",
+                parse_mode="html"
+            )
+            result_text += "\n\n✅ User notified successfully."
+        except Exception as e:
+            result_text += f"\n\n⚠️ Could not notify user: {str(e)[:50]}"
+    
+    await status_msg.edit(result_text, parse_mode="html")
+
 # ================== BULK POINTS PURCHASE COMMAND ==================
 
 @bot.on(events.NewMessage(pattern=r"^/buypoints$"))
@@ -2790,7 +3135,7 @@ async def broadcast_handler(event):
 # ================== MAIN ==================
 
 def main():
-    logger.info("Stake Payment Bot (Multi-Product with API Claimer + Auto-Delete + Bulk Points) is running...")
+    logger.info("Stake Payment Bot (Multi-Product with API Claimer + Auto-Delete + Bulk Points + Stats + Extend) is running...")
     try:
         loop = asyncio.get_event_loop()
         # Only start the main loop - container cleanup is now integrated
