@@ -271,7 +271,7 @@ def build_api_claimer_status_url(username: str):
     clean_user = username.lstrip("@").strip()
     return f"https://code-dash.kustbotsweb.workers.dev/api-cl?user={clean_user}"
 
-def deploy_api_container(session_token: str, app_name: str):
+def deploy_api_container(session_token: str, app_name: str, progress_callback=None):
     """
     Deploy API container for the user.
     Calls the deploy API with the session token and app name.
@@ -319,6 +319,11 @@ def deploy_api_container(session_token: str, app_name: str):
                     progress = data.get("progress", 0)
                     
                     logger.info(f"[DEPLOY] Status update: {status} - {message} ({progress}%)")
+                    if progress_callback:
+                        try:
+                            progress_callback(status, message, progress)
+                        except Exception as cb_error:
+                            logger.warning(f"[DEPLOY] Progress callback failed: {cb_error}")
                     
                     # Track the last status
                     last_status = data
@@ -382,62 +387,62 @@ def extract_status_from_query_response(resp_json):
 
 async def animate_deploy_progress(user_id: int, app_name: str, session_token: str, username_clean: str):
     """
-    Deploy container with animated progress messages.
+    Deploy container with real progress messages.
     Returns (success, result) tuple.
     """
-    # Animation frames
-    frames = [
-        "⏳ Initializing deployment...",
-        "⏳ Fetching container image...",
-        "⏳ Setting up environment...",
-        "⏳ Configuring network...",
-        "⏳ Starting container...",
-        "⏳ Running health checks...",
-        "⏳ Finalizing deployment...",
-    ]
+    progress_state = {
+        "message": "Starting deployment...",
+        "progress": 0,
+    }
     
     # Send initial message
     progress_msg = await bot.send_message(
         user_id,
         f"🚀 <b>Deploying your API Claimer container...</b>\n\n"
         f"App Name: <code>{app_name}</code>\n"
-        f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
-        f"{frames[0]}",
+        f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
+        f"Progress: <b>0%</b>\n\n"
+        f"Status: Starting deployment...",
         parse_mode="html"
     )
-    
-    frame_idx = 0
-    dots = ""
-    
-    async def update_progress():
-        nonlocal frame_idx, dots
+
+    last_rendered = None
+
+    def on_progress(status: str, message: str, progress: int):
+        progress_state["message"] = message or progress_state["message"]
+        if progress is not None:
+            progress_state["progress"] = progress
+
+    async def update_progress(force=False):
+        nonlocal last_rendered
         try:
-            # Cycle through dots
-            dots = "." * ((len(dots) % 3) + 1)
-            current_frame = frames[frame_idx % len(frames)]
-            
+            current_render = (progress_state["progress"], progress_state["message"])
+            if not force and current_render == last_rendered:
+                return
+
             await bot.edit_message(
                 user_id,
                 progress_msg.id,
                 f"🚀 <b>Deploying your API Claimer container...</b>\n\n"
                 f"App Name: <code>{app_name}</code>\n"
-                f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n\n"
-                f"{current_frame}{dots}",
+                f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
+                f"Progress: <b>{progress_state['progress']}%</b>\n\n"
+                f"Status: {progress_state['message']}",
                 parse_mode="html"
             )
-            frame_idx += 1
+            last_rendered = current_render
         except Exception as e:
             logger.warning(f"Failed to update progress message: {e}")
     
     # Start deployment in background
     deploy_task = asyncio.create_task(
-        asyncio.to_thread(deploy_api_container, session_token, app_name)
+        asyncio.to_thread(deploy_api_container, session_token, app_name, on_progress)
     )
     
-    # Animate while waiting
+    # Update while waiting for real progress events
     while not deploy_task.done():
         await update_progress()
-        await asyncio.sleep(2)  # Update every 2 seconds
+        await asyncio.sleep(1)
     
     # Get result
     try:
