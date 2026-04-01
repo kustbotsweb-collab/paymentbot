@@ -267,6 +267,10 @@ def generate_unique_app_name(username: str):
     random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
     return f"{base_name}-{random_suffix}"
 
+def build_api_claimer_status_url(username: str):
+    clean_user = username.lstrip("@").strip()
+    return f"https://code-dash.kustbotsweb.workers.dev/api-cl?user={clean_user}"
+
 def deploy_api_container(session_token: str, app_name: str):
     """
     Deploy API container for the user.
@@ -376,7 +380,7 @@ def extract_status_from_query_response(resp_json):
 
 # ================== PROGRESS ANIMATION HELPER ==================
 
-async def animate_deploy_progress(user_id: int, app_name: str, session_token: str):
+async def animate_deploy_progress(user_id: int, app_name: str, session_token: str, username_clean: str):
     """
     Deploy container with animated progress messages.
     Returns (success, result) tuple.
@@ -445,16 +449,17 @@ async def animate_deploy_progress(user_id: int, app_name: str, session_token: st
     
     # Update final message
     if success:
-        web_url = result.get("web_url", f"https://{app_name}.herokuapp.com")
+        status_url = build_api_claimer_status_url(username_clean)
         await bot.edit_message(
             user_id,
             progress_msg.id,
             f"✅ <b>Container Deployed Successfully!</b>\n\n"
             f"App Name: <code>{app_name}</code>\n"
             f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
-            f"URL: <code>{web_url}</code>\n\n"
+            f"Use the button below to check your live claim status.\n\n"
             f"🎉 Your API Claimer is now live!",
-            parse_mode="html"
+            parse_mode="html",
+            buttons=[[Button.url("Check Live Claim Status", status_url)]]
         )
     else:
         # Use user-friendly error message
@@ -466,7 +471,8 @@ async def animate_deploy_progress(user_id: int, app_name: str, session_token: st
             f"App Name: <code>{app_name}</code>\n"
             f"Error: {error_msg}\n\n"
             f"Please contact support for assistance.",
-            parse_mode="html"
+            parse_mode="html",
+            buttons=deploy_buttons
         )
     
     return success, result
@@ -573,6 +579,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
                 # === API CLAIMER SPECIFIC: DEPLOY CONTAINER WITH ANIMATION ===
                 deploy_message = ""
+                deploy_buttons = None
                 if product_type == "api_claimer":
                     session_token = session.get("session_token")
                     if session_token:
@@ -580,7 +587,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         app_name = generate_unique_app_name(username_clean)
                         
                         # Deploy container with animated progress
-                        deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token)
+                        deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token, username_clean)
                         
                         if deploy_ok:
                             expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
@@ -620,12 +627,14 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                                 upsert=True
                             )
                             
+                            status_url = build_api_claimer_status_url(username_clean)
                             deploy_message = (
                                 f"\n\n✅ <b>Container Deployed!</b>\n"
                                 f"App Name: <code>{app_name}</code>\n"
                                 f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
-                                f"URL: <code>{web_url}</code>"
+                                f"Use the button below to check your live claim status."
                             )
+                            deploy_buttons = [[Button.url("Check Live Claim Status", status_url)]]
                         else:
                             # Use user-friendly error message
                             error_msg = get_user_friendly_deploy_error(deploy_resp)
@@ -651,7 +660,8 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                     f"Stake Username: <code>@{username_clean}</code>\n"
                     f"Duration: <b>{hours} hours</b>."
                     f"{deploy_message}",
-                    parse_mode="html"
+                    parse_mode="html",
+                    buttons=deploy_buttons
                 )
 
                 # FORWARD + PIN
@@ -1311,7 +1321,8 @@ async def extend_time_handler(event):
             "<code>/extend @alice123 72 api_claimer</code>\n"
             "<code>/extend 123456789 24 claimer</code>\n\n"
             "<i>If product not specified, extends on all active products.</i>",
-            parse_mode="html"
+            parse_mode="html",
+            buttons=deploy_buttons
         )
     
     target_arg = args[1]
@@ -2946,12 +2957,13 @@ async def pay_points_handler(event):
     if activation_ok:
         # === API CLAIMER: DEPLOY CONTAINER WITH ANIMATION ===
         deploy_message = ""
+        deploy_buttons = None
         if prod == "api_claimer":
             session_token = session.get("session_token")
             if session_token:
                 # Deploy container with animated progress
                 app_name = generate_unique_app_name(username_clean)
-                deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token)
+                deploy_ok, deploy_resp = await animate_deploy_progress(user_id, app_name, session_token, username_clean)
                 
                 if deploy_ok:
                     expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
@@ -2991,12 +3003,14 @@ async def pay_points_handler(event):
                         upsert=True
                     )
                     
+                    status_url = build_api_claimer_status_url(username_clean)
                     deploy_message = (
                         f"\n\n✅ <b>Container Deployed!</b>\n"
                         f"App Name: <code>{app_name}</code>\n"
                         f"Region: <b>{API_CLAIMER_REGION.upper()}</b>\n"
-                        f"URL: <code>{web_url}</code>"
+                        f"Use the button below to check your live claim status."
                     )
+                    deploy_buttons = [[Button.url("Check Live Claim Status", status_url)]]
                 else:
                     # Use user-friendly error message
                     error_msg = get_user_friendly_deploy_error(deploy_resp)
