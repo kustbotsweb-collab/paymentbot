@@ -139,6 +139,32 @@ _expired_cleanup_sent = {}
 # Track pre-expiry container deletion to avoid duplicates: { key: True }
 _pre_expiry_deletion_sent = {}
 
+# ================== ERROR MESSAGE HELPER ==================
+
+def get_user_friendly_deploy_error(error_data):
+    """
+    Check if the deployment error is due to app limit being reached.
+    Returns a user-friendly error message if so, otherwise returns the original error.
+    """
+    error_msg = ""
+    if isinstance(error_data, dict):
+        error_msg = error_data.get("message", error_data.get("error", ""))
+        if not error_msg:
+            error_msg = str(error_data)
+    else:
+        error_msg = str(error_data)
+    
+    # Check for Heroku app limit error
+    if "app limit" in error_msg.lower() or "reached your app limit" in error_msg.lower():
+        return "All slots are already full. Limit: 1500 max."
+    
+    # Check for 422 status with invalid_params
+    if "422" in error_msg and "invalid_params" in error_msg:
+        return "All slots are already full. Limit: 1500 max."
+    
+    # Return original error if not app limit
+    return error_msg if error_msg else "Unknown error"
+
 # ================== OXAPAY HELPERS ==================
 
 def create_invoice(amount: float, currency: str = "USDT", lifetime: int = 60):
@@ -431,7 +457,8 @@ async def animate_deploy_progress(user_id: int, app_name: str, session_token: st
             parse_mode="html"
         )
     else:
-        error_msg = result.get("message", result.get("error", "Unknown error"))
+        # Use user-friendly error message
+        error_msg = get_user_friendly_deploy_error(result)
         await bot.edit_message(
             user_id,
             progress_msg.id,
@@ -600,7 +627,8 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                                 f"URL: <code>{web_url}</code>"
                             )
                         else:
-                            error_msg = deploy_resp.get("message", deploy_resp.get("error", "Unknown error"))
+                            # Use user-friendly error message
+                            error_msg = get_user_friendly_deploy_error(deploy_resp)
                             deploy_message = (
                                 f"\n\n⚠️ <b>Container deployment failed.</b>\n"
                                 f"Error: {error_msg}\n"
@@ -2970,7 +2998,8 @@ async def pay_points_handler(event):
                         f"URL: <code>{web_url}</code>"
                     )
                 else:
-                    error_msg = deploy_resp.get("message", deploy_resp.get("error", "Unknown error"))
+                    # Use user-friendly error message
+                    error_msg = get_user_friendly_deploy_error(deploy_resp)
                     deploy_message = (
                         f"\n\n⚠️ <b>Container deployment failed.</b>\n"
                         f"Error: {error_msg}\n"
