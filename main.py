@@ -20,21 +20,21 @@ UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
 UPI_DM_LINK = "https://t.me/KustXoffical"
 
 # --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth-432b14a97f21.herokuapp.com"
+CLAIMER_API_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"
 # Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("kustvault", 5)
 CLAIMER_FORWARD_2 = ("kustvault", 6)
 CLAIMER_FORWARD_3 = ("kustvault", 7)
 
 # --- Chat Farmer Assets ---
-FARMER_API_URL = "https://farmer-auth-5ff624c7d5bb.herokuapp.com"
+FARMER_API_URL = "https://farmer-auth-23d20abb870c.herokuapp.com"
 # Forwards for Farmer (Using same vault for now, change if needed)
 FARMER_FORWARD_1 = ("kustvault", 2)
 FARMER_FORWARD_2 = ("kustvault", 3)
 FARMER_FORWARD_3 = ("kustvault", 4)
 
 # --- API Claimer Assets ---
-API_CLAIMER_AUTH_URL = "https://code-auth-432b14a97f21.herokuapp.com"  # Same as Code Claimer auth
+API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
 API_CLAIMER_DEPLOY_URL = "https://claimer-deploy-da60199619e8.herokuapp.com"  # CHANGE THIS to your deploy server URL
 API_CLAIMER_AUTH_TOKEN = "fuck1234"  # CHANGE THIS to your deploy API auth token
 API_CLAIMER_REGION = "eu"  # Deploy region
