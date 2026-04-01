@@ -35,7 +35,7 @@ FARMER_FORWARD_3 = ("kustvault", 4)
 
 # --- API Claimer Assets ---
 API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
-API_CLAIMER_DEPLOY_URL = "https://claimer-deploy-da60199619e8.herokuapp.com"  # CHANGE THIS to your deploy server URL
+API_CLAIMER_DEPLOY_URL = "https://claimer-api-deploy-600865844b28.herokuapp.com"  # CHANGE THIS to your deploy server URL
 API_CLAIMER_AUTH_TOKEN = "fuck1234"  # CHANGE THIS to your deploy API auth token
 API_CLAIMER_REGION = "eu"  # Deploy region
 # Forwards for API Claimer (Using same vault, change if needed)
