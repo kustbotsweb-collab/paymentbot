@@ -71,7 +71,7 @@ api_subscriptions_col = db["api_subscriptions"]
 BOT_OWNER_ID = 7618467489
 
 # OxaPay API
-OXAPAY_API_KEY = "SNJEE3-MOEI0B-WR0FW4-UWSLXH"
+OXAPAY_API_KEY = "EZJYLC-3A6TFB-RFFXOR-WTTDY3"
 OXAPAY_API_BASE = "https://api.oxapay.com"
 
 # Active users checker settings
