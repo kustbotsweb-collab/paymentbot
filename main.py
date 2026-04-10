@@ -121,7 +121,7 @@ BULK_POINTS_PACKAGES = {
 }
 
 # --- REFUND CONFIGURATION ---
-# Refund amounts per hour remaining. 
+# Refund amounts per hour remaining.
 # Set conservatively to prevent "Plan Arbitrage" (buying cheap long plans and refunding at expensive short rates).
 REFUND_RATE_CLAIMER_PER_HOUR = 0.15 # Approx $0.15 per hour
 REFUND_RATE_FARMER_PER_HOUR = 0.08  # Approx $0.08 per hour
@@ -2084,14 +2084,15 @@ async def terminate_sub_menu_handler(event):
         remaining_hours = remaining_secs / 3600.0
     else:
         remaining_hours = 0
-        
+
+    # Calculate refund based on the correct product's rate
     refund_amount = 0.0
     if remaining_hours > 0:
         if product_name == "Code Claimer":
             refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
         elif product_name == "API Claimer":
             refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
-        else:
+        else:  # Chat Farmer
             refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
             
     refund_amount = round(refund_amount, 2)
@@ -2142,60 +2143,95 @@ async def terminate_execute_handler(event):
         await event.edit("Session expired. Please try again.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
         return
         
-    await event.edit("⏳ Deleting user from server...", parse_mode="html")
+    await event.edit("⏳ Terminating subscription on all services...", parse_mode="html")
+
+    # ===== CALL ALL THREE PRODUCT APIs TO DELETE USER =====
+    # This ensures the user is fully removed from every product, not just the active one.
+    all_api_urls = [CLAIMER_API_URL, FARMER_API_URL, API_CLAIMER_AUTH_URL]
     
-    success = await asyncio.to_thread(delete_user_api, username, api_url)
+    # Deduplicate in case any URLs are the same (e.g. CLAIMER and API_CLAIMER share URL)
+    seen_urls = set()
+    unique_api_urls = []
+    for u in all_api_urls:
+        if u not in seen_urls:
+            seen_urls.add(u)
+            unique_api_urls.append(u)
+
+    deletion_results = []
+    any_success = False
+    for del_url in unique_api_urls:
+        ok = await asyncio.to_thread(delete_user_api, username, del_url)
+        deletion_results.append((del_url, ok))
+        if ok:
+            any_success = True
+        logger.info(f"[TERMINATE] delete_user_api on {del_url} for @{username}: {'ok' if ok else 'failed'}")
+
+    # ===== ALWAYS DELETE API CLAIMER CONTAINERS (regardless of product) =====
+    # Whether the active product is Claimer, Farmer, or API Claimer,
+    # we always clean up any deployed containers for this username.
+    container_lines = []
+    try:
+        deployed_apps_list = list(deployed_apps_col.find({"username": username, "status": "active"}))
+        if deployed_apps_list:
+            for deployed_app in deployed_apps_list:
+                app_name = deployed_app.get("app_name")
+                mirror = deployed_app.get("mirror_site", "?")
+                if app_name:
+                    delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
+                    
+                    now_dt = datetime.now(timezone.utc)
+                    deployed_apps_col.update_one(
+                        {"app_name": app_name},
+                        {"$set": {
+                            "status": "terminated",
+                            "terminated_at": now_dt,
+                            "deletion_reason": "user_terminated"
+                        }}
+                    )
+                    api_subscriptions_col.update_many(
+                        {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
+                        {"$set": {
+                            "status": "terminated",
+                            "terminated_at": now_dt,
+                            "deletion_reason": "user_terminated"
+                        }}
+                    )
+                    
+                    status_icon = "✅" if delete_ok else "⚠️"
+                    container_lines.append(f"{status_icon} <code>{app_name}</code> [{mirror}]")
+                    logger.info(f"[TERMINATE] Container {app_name} deletion: {'ok' if delete_ok else 'failed'} — {delete_resp}")
+    except Exception as e:
+        logger.error(f"[TERMINATE] Failed to delete deployed apps during termination: {e}")
+
+    # ===== UPDATE DB: REFUND POINTS AND REMOVE USERNAME =====
+    user_doc = users_col.find_one({"user_id": user_id})
+    current_db_user = user_doc.get("username", "").lstrip("@") if user_doc else ""
     
-    if success:
-        # If API Claimer, also stop ALL deployed containers (dual deploy = 2 containers)
-        if product_name == "API Claimer":
-            try:
-                deployed_apps_list = list(deployed_apps_col.find({"username": username, "status": "active"}))
-                for deployed_app in deployed_apps_list:
-                    app_name = deployed_app.get("app_name")
-                    if app_name:
-                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                        
-                        deployed_apps_col.update_one(
-                            {"app_name": app_name},
-                            {"$set": {
-                                "status": "terminated",
-                                "terminated_at": datetime.now(timezone.utc),
-                                "deletion_reason": "user_terminated"
-                            }}
-                        )
-                        api_subscriptions_col.update_many(
-                            {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
-                            {"$set": {
-                                "status": "terminated",
-                                "terminated_at": datetime.now(timezone.utc),
-                                "deletion_reason": "user_terminated"
-                            }}
-                        )
-            except Exception as e:
-                logger.error(f"Failed to delete deployed apps during termination: {e}")
+    update_query = {"$inc": {"points": refund}}
+    if current_db_user.lower() == username.lower().lstrip("@"):
+        update_query["$unset"] = {"username": ""}
         
-        user_doc = users_col.find_one({"user_id": user_id})
-        current_db_user = user_doc.get("username", "").lstrip("@") if user_doc else ""
-        
-        update_query = {"$inc": {"points": refund}}
-        
-        if current_db_user.lower() == username.lower().lstrip("@"):
-             update_query["$unset"] = {"username": ""}
-             
-        users_col.update_one({"user_id": user_id}, update_query)
-        
+    users_col.update_one({"user_id": user_id}, update_query)
+
+    # ===== BUILD RESULT MESSAGE =====
+    if any_success:
+        container_summary = ""
+        if container_lines:
+            container_summary = "\n\n<b>🗑 Containers Stopped:</b>\n" + "\n".join(container_lines)
+        elif not container_lines:
+            container_summary = "\n\n<i>No active containers found.</i>"
+
         await event.edit(
             f"✅ <b>Subscription Terminated</b>\n\n"
-            f"User <code>@{username}</code> deleted.\n"
-            f"All containers stopped.\n"
-            f"Refunded: <b>{refund} Points</b>.",
+            f"User <code>@{username}</code> removed from all services.\n"
+            f"Refunded: <b>{refund} Points</b>."
+            f"{container_summary}",
             parse_mode="html",
             buttons=[[Button.inline("🔙 Main Menu", b"back_to_start")]]
         )
     else:
         await event.edit(
-            "❌ Failed to delete user from server. Please contact support.",
+            "❌ Failed to delete user from all servers. Please contact support.",
             buttons=[[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
         )
         
@@ -2359,14 +2395,15 @@ async def text_input_handler(event):
             remaining_hours = remaining_secs / 3600.0
         else:
             remaining_hours = 0
-            
+
+        # Calculate refund based on correct product rate
         refund_amount = 0.0
         if remaining_hours > 0:
             if product_name == "Code Claimer":
                 refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
             elif product_name == "API Claimer":
                 refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
-            else:
+            else:  # Chat Farmer
                 refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
                 
         refund_amount = round(refund_amount, 2)
