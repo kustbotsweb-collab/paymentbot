@@ -38,7 +38,7 @@ API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same
 
 # DUAL DEPLOY URLS — Deploy 1 uses stake.bet, Deploy 2 uses stake.pet
 API_CLAIMER_DEPLOY_URL_1 = "https://claimer-api-deploy-600865844b28.herokuapp.com"   # CHANGE THIS — Deploy 1 (stake.bet)
-API_CLAIMER_DEPLOY_URL_2 = "https://api-claimer-deploy-56b940d35d3a.herokuapp.com"       # CHANGE THIS — Deploy 2 (stake.pet)
+API_CLAIMER_DEPLOY_URL_2 = "https://claimer-api-deploy2-CHANGEME.herokuapp.com"       # CHANGE THIS — Deploy 2 (stake.pet)
 
 API_CLAIMER_AUTH_TOKEN = "fuck1234"  # CHANGE THIS to your deploy API auth token
 API_CLAIMER_REGION = "eu"  # Deploy region
@@ -71,7 +71,7 @@ api_subscriptions_col = db["api_subscriptions"]
 BOT_OWNER_ID = 7618467489
 
 # OxaPay API
-OXAPAY_API_KEY = "SNJEE3-MOEI0B-ZR0FW4-UWSLXH"
+OXAPAY_API_KEY = "SNJEE3-MOEI0B-WR0FW4-UWSLXH"
 OXAPAY_API_BASE = "https://api.oxapay.com"
 
 # Active users checker settings
@@ -104,7 +104,7 @@ PLANS_FARMER_SHORT = {
 
 # Plans (Exclusive to API Claimer)
 PLANS_API_CLAIMER = {
-    "1d":  {"label": "12 hours",    "amount": 5.0,  "hours": 12},
+    "1d":  {"label": "1 Day",    "amount": 5.0,  "hours": 12},
     "3d":  {"label": "3 Days",   "amount": 7.5,  "hours": 72},
     "7d":  {"label": "7 Days",   "amount": 10.0, "hours": 168},
     "14d": {"label": "14 Days",  "amount": 18.0, "hours": 336},
@@ -301,15 +301,15 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, mir
             "Content-Type": "application/json",
             "Accept": "text/event-stream"
         }
+        # FIXED: MIRROR_SITE as top-level field alongside session_token and app_name
         payload = {
             "session_token": session_token,
             "app_name": app_name,
-            "env": {
-                "MIRROR_SITE": mirror_site
-            }
+            "MIRROR_SITE": mirror_site
         }
         
         logger.info(f"[DEPLOY] Deploying container: {app_name} via {deploy_url} (MIRROR_SITE={mirror_site})")
+        logger.info(f"[DEPLOY] Payload: session_token=***, app_name={app_name}, MIRROR_SITE={mirror_site}")
         
         # Use stream=True to handle SSE response
         r = requests.post(url, headers=headers, json=payload, stream=True, timeout=600)
