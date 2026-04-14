@@ -858,13 +858,41 @@ def delete_user_api(username: str, api_url: str):
 # ================== ACTIVE USERS CHECKER (background) ==================
 
 def _parse_iso_datetime(s: str):
+    if not s:
+        return None
     try:
         return datetime.fromisoformat(s)
     except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        pass
+    # Try additional formats sometimes returned by APIs
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
         try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return datetime.strptime(s, fmt)
         except Exception:
-            return None
+            pass
+    logger.warning(f"[PARSE_DT] Could not parse datetime string: {s!r}")
+    return None
+
+def _extract_active_users_list(data):
+    """
+    Robustly extract the list of active users from various API response formats.
+    Handles: {"active_users": [...]}, {"users": [...]}, {"data": [...]}, or direct list.
+    """
+    if not data:
+        return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        # Try common key names
+        for key in ("active_users", "users", "data", "result", "results"):
+            val = data.get(key)
+            if isinstance(val, list):
+                return val
+    return []
 
 async def check_active_users_loop():
     await asyncio.sleep(5)
@@ -872,176 +900,144 @@ async def check_active_users_loop():
     
     api_sources = [
         {"name": "Code Claimer", "url": CLAIMER_API_URL},
-        {"name": "Chat Farmer", "url": FARMER_API_URL},
-        {"name": "API Claimer", "url": API_CLAIMER_AUTH_URL}
+        {"name": "Chat Farmer",  "url": FARMER_API_URL},
+        {"name": "API Claimer",  "url": API_CLAIMER_AUTH_URL},
     ]
 
     while True:
         try:
             now = datetime.now(timezone.utc)
-            
-            # === PHASE 1: CHECK ACTIVE USERS FROM API FOR REMINDERS AND PRE-EXPIRY CLEANUP ===
+
+            # ===================================================================
+            # PHASE 1: CHECK ACTIVE USERS FROM EACH API — REMINDERS + PRE-EXPIRY
+            # ===================================================================
             for source in api_sources:
                 api_name = source["name"]
-                api_url = source["url"]
-                
-                data = await asyncio.to_thread(get_active_users, api_url)
-                
-                if not data:
+                api_url  = source["url"]
+
+                try:
+                    data = await asyncio.to_thread(get_active_users, api_url)
+                except Exception as e:
+                    logger.error(f"[REMINDER] get_active_users failed for {api_name}: {e}")
                     continue
 
-                users = data.get("active_users") if isinstance(data, dict) else None
-                if isinstance(users, list):
-                    for entry in users:
-                        try:
-                            expires_raw = entry.get("expires")
-                            username = entry.get("username") 
-                            if not expires_raw or not username:
-                                continue
-                            expires_dt = _parse_iso_datetime(expires_raw)
-                            if not expires_dt:
-                                continue
+                if not data:
+                    logger.debug(f"[REMINDER] No data returned from {api_name}")
+                    continue
 
-                            if expires_dt.tzinfo is None:
-                                expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                users = _extract_active_users_list(data)
 
-                            time_left = expires_dt - now
-                            seconds_left = time_left.total_seconds()
-                            minutes_left = seconds_left / 60
+                if not users:
+                    logger.debug(f"[REMINDER] No active users found for {api_name}")
+                    continue
 
-                            username_clean = username.lstrip("@").strip()
-                            
-                            # Get user info from DB
-                            rec = users_col.find_one({"username": username_clean})
-                            user_id = rec.get("user_id") if rec else None
+                logger.debug(f"[REMINDER] {api_name}: {len(users)} active user(s) to check")
 
-                            # === REMINDER: 10 minutes left ===
-                            if minutes_left <= REMINDER_THRESHOLD_MINUTES and minutes_left > 1:
-                                reminder_key = f"reminder_{username_clean.lower()}_{api_name}_{expires_dt.isoformat()}"
-                                
-                                if not _reminder_sent.get(reminder_key):
-                                    if user_id:
-                                        try:
-                                            rem_text = (
-                                                f"⏳ <b>Subscription ending soon</b>\n\n"
-                                                f"Product: <b>{api_name}</b>\n"
-                                                f"User: <code>@{username_clean}</code>\n"
-                                                f"Expires: {expires_dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                                                f"Time left: ~{int(minutes_left)} mins.\n\n"
-                                                f"Renew now to avoid interruption."
-                                            )
-                                            buttons = [
-                                                [Button.inline("💳 Renew Now", b"buy_sub")],
-                                                [Button.url("🛠 Support", SUPPORT_CHAT_LINK)],
-                                            ]
-                                            await bot.send_message(user_id, rem_text, parse_mode="html", buttons=buttons)
-                                            logger.info(f"[REMINDER] Sent to @{username_clean} for {api_name} ({int(minutes_left)} mins left)")
-                                            _reminder_sent[reminder_key] = True
-                                        except Exception as e:
-                                            logger.exception(f"Failed to send reminder to {username_clean}: {e}")
-
-                            # === PRE-EXPIRY CONTAINER DELETION: < 60 seconds left ===
-                            if api_name == "API Claimer" and seconds_left <= 60 and seconds_left > -300:
-                                # Find ALL deployed containers for this user (dual deploy = 2 containers)
-                                deployed_apps = list(deployed_apps_col.find({
-                                    "username": username_clean,
-                                    "status": "active"
-                                }))
-                                
-                                for deployed_app in deployed_apps:
-                                    app_name = deployed_app.get("app_name")
-                                    container_user_id = deployed_app.get("user_id")
-                                    
-                                    if app_name:
-                                        deletion_key = f"pre_expiry_{app_name}"
-                                        
-                                        if not _pre_expiry_deletion_sent.get(deletion_key):
-                                            logger.info(f"[PRE_EXPIRY_DELETE] Deleting container: {app_name}")
-                                            
-                                            delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                                            
-                                            if delete_ok:
-                                                deployed_apps_col.update_one(
-                                                    {"app_name": app_name},
-                                                    {"$set": {
-                                                        "status": "expired_deleted",
-                                                        "deleted_at": now,
-                                                        "deletion_reason": "subscription_expired"
-                                                    }}
-                                                )
-                                                api_subscriptions_col.update_many(
-                                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
-                                                    {"$set": {
-                                                        "status": "expired_deleted",
-                                                        "deleted_at": now,
-                                                        "deletion_reason": "subscription_expired"
-                                                    }}
-                                                )
-                                                logger.info(f"[PRE_EXPIRY_DELETE] Successfully deleted container: {app_name}")
-                                            else:
-                                                logger.error(f"[PRE_EXPIRY_DELETE] Failed to delete container {app_name}: {delete_resp}")
-                                            
-                                            _pre_expiry_deletion_sent[deletion_key] = True
-                                
-                                # Send ONE expiry notification after all containers processed
-                                notify_key = f"expiry_notify_{username_clean}_{expires_dt.isoformat()}"
-                                if not _pre_expiry_deletion_sent.get(notify_key) and deployed_apps:
-                                    notify_user_id = deployed_apps[0].get("user_id") or user_id
-                                    if notify_user_id:
-                                        try:
-                                            await bot.send_message(
-                                                notify_user_id,
-                                                f"⏰ <b>Subscription Expired</b>\n\n"
-                                                f"Your API Claimer subscription has expired.\n"
-                                                f"All containers have been automatically stopped.\n\n"
-                                                f"Renew to get new containers deployed.",
-                                                parse_mode="html",
-                                                buttons=[
-                                                    [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
-                                                    [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
-                                                ]
-                                            )
-                                        except Exception as e:
-                                            logger.error(f"Failed to notify user {notify_user_id} about expired containers: {e}")
-                                    _pre_expiry_deletion_sent[notify_key] = True
-                                        
-                        except Exception as ee:
-                            logger.exception(f"Error processing active user entry: {ee}")
-            
-            # === PHASE 2: CHECK DEPLOYED CONTAINERS FROM DATABASE (FALLBACK) ===
-            try:
-                active_containers = deployed_apps_col.find({"status": "active"})
-                
-                for container in active_containers:
+                for entry in users:
                     try:
-                        app_name = container.get("app_name")
-                        username = container.get("username")
-                        container_user_id = container.get("user_id")
-                        expires_at = container.get("expires_at")
-                        
-                        if not app_name or not expires_at:
-                            continue
-                        
-                        if isinstance(expires_at, str):
-                            expires_at = _parse_iso_datetime(expires_at)
-                        
-                        if not expires_at:
+                        expires_raw = entry.get("expires") or entry.get("expiry") or entry.get("expire_at") or entry.get("expires_at")
+                        username    = entry.get("username") or entry.get("user") or entry.get("name")
+
+                        if not expires_raw or not username:
+                            logger.debug(f"[REMINDER] Skipping entry missing expires/username: {entry}")
                             continue
 
-                        if expires_at.tzinfo is None:
-                            expires_at = expires_at.replace(tzinfo=timezone.utc)
+                        expires_dt = _parse_iso_datetime(str(expires_raw))
+                        if not expires_dt:
+                            logger.warning(f"[REMINDER] Could not parse expiry for {username}: {expires_raw!r}")
+                            continue
 
-                        time_left = expires_at - now
+                        # Make timezone-aware
+                        if expires_dt.tzinfo is None:
+                            expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+
+                        time_left    = expires_dt - now
                         seconds_left = time_left.total_seconds()
-                        
-                        if seconds_left <= 60:
-                            deletion_key = f"db_cleanup_{app_name}"
-                            
-                            if not _expired_cleanup_sent.get(deletion_key):
-                                logger.info(f"[DB_CLEANUP] Found expired/soon-to-expire container: {app_name} for @{username}")
-                                
-                                delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                                
+                        minutes_left = seconds_left / 60.0
+
+                        username_clean = username.lstrip("@").strip()
+
+                        # Fetch user_id from DB for DM
+                        rec     = users_col.find_one({"username": username_clean})
+                        user_id = rec.get("user_id") if rec else None
+
+                        # -------------------------------------------------------
+                        # REMINDER: send when <= 10 minutes left (and > 0 seconds)
+                        # Key is per-username + api + expiry so it fires once only
+                        # -------------------------------------------------------
+                        if 0 < seconds_left <= (REMINDER_THRESHOLD_MINUTES * 60):
+                            reminder_key = (
+                                f"reminder_{username_clean.lower()}"
+                                f"_{api_name}"
+                                f"_{expires_dt.strftime('%Y%m%d%H%M')}"  # minute-precision → stable key
+                            )
+
+                            if not _reminder_sent.get(reminder_key):
+                                logger.info(
+                                    f"[REMINDER] {api_name} — @{username_clean} — "
+                                    f"{minutes_left:.1f} min left — sending reminder"
+                                )
+
+                                if user_id:
+                                    try:
+                                        rem_text = (
+                                            f"⏳ <b>Subscription ending soon!</b>\n\n"
+                                            f"Product: <b>{api_name}</b>\n"
+                                            f"User: <code>@{username_clean}</code>\n"
+                                            f"Expires: {expires_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                                            f"Time left: ~{int(minutes_left)} min(s).\n\n"
+                                            f"Renew now to avoid any interruption!"
+                                        )
+                                        buttons = [
+                                            [Button.inline("💳 Renew Now", b"buy_sub")],
+                                            [Button.url("🛠 Support", SUPPORT_CHAT_LINK)],
+                                        ]
+                                        await bot.send_message(
+                                            user_id,
+                                            rem_text,
+                                            parse_mode="html",
+                                            buttons=buttons
+                                        )
+                                        logger.info(
+                                            f"[REMINDER] ✅ Sent to user_id={user_id} "
+                                            f"(@{username_clean}) for {api_name}"
+                                        )
+                                    except Exception as e:
+                                        logger.exception(
+                                            f"[REMINDER] ❌ Failed to send DM to {username_clean}: {e}"
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"[REMINDER] @{username_clean} not found in DB — "
+                                        f"cannot send reminder for {api_name}"
+                                    )
+
+                                # Mark as sent regardless so we don't retry every poll
+                                _reminder_sent[reminder_key] = True
+
+                        # -------------------------------------------------------
+                        # PRE-EXPIRY CONTAINER DELETION: only for API Claimer
+                        # -------------------------------------------------------
+                        if api_name == "API Claimer" and -300 < seconds_left <= 60:
+                            deployed_apps = list(deployed_apps_col.find({
+                                "username": username_clean,
+                                "status": "active"
+                            }))
+
+                            for deployed_app in deployed_apps:
+                                app_name = deployed_app.get("app_name")
+                                if not app_name:
+                                    continue
+
+                                deletion_key = f"pre_expiry_{app_name}"
+                                if _pre_expiry_deletion_sent.get(deletion_key):
+                                    continue
+
+                                logger.info(f"[PRE_EXPIRY_DELETE] Deleting container: {app_name}")
+                                delete_ok, delete_resp = await asyncio.to_thread(
+                                    delete_deployed_app, app_name
+                                )
+
                                 if delete_ok:
                                     deployed_apps_col.update_one(
                                         {"app_name": app_name},
@@ -1059,38 +1055,138 @@ async def check_active_users_loop():
                                             "deletion_reason": "subscription_expired"
                                         }}
                                     )
-                                    
-                                    if container_user_id:
-                                        try:
-                                            await bot.send_message(
-                                                container_user_id,
-                                                f"⏰ <b>Subscription Expired</b>\n\n"
-                                                f"Your API Claimer subscription has expired.\n"
-                                                f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
-                                                f"Renew to get new containers deployed.",
-                                                parse_mode="html",
-                                                buttons=[
-                                                    [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
-                                                    [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
-                                                ]
-                                            )
-                                        except Exception as e:
-                                            logger.error(f"Failed to notify user {container_user_id} about expired container: {e}")
-                                    
-                                    logger.info(f"[DB_CLEANUP] Successfully deleted container: {app_name}")
+                                    logger.info(f"[PRE_EXPIRY_DELETE] ✅ Deleted container: {app_name}")
                                 else:
-                                    logger.error(f"[DB_CLEANUP] Failed to delete container {app_name}: {delete_resp}")
-                                
-                                _expired_cleanup_sent[deletion_key] = True
-                                    
+                                    logger.error(
+                                        f"[PRE_EXPIRY_DELETE] ❌ Failed to delete {app_name}: {delete_resp}"
+                                    )
+
+                                _pre_expiry_deletion_sent[deletion_key] = True
+
+                            # One expiry notification per user (after all containers processed)
+                            notify_key = (
+                                f"expiry_notify_{username_clean}"
+                                f"_{expires_dt.strftime('%Y%m%d%H%M')}"
+                            )
+                            if not _pre_expiry_deletion_sent.get(notify_key) and deployed_apps:
+                                notify_user_id = deployed_apps[0].get("user_id") or user_id
+                                if notify_user_id:
+                                    try:
+                                        await bot.send_message(
+                                            notify_user_id,
+                                            f"⏰ <b>Subscription Expired</b>\n\n"
+                                            f"Your API Claimer subscription has expired.\n"
+                                            f"All containers have been automatically stopped.\n\n"
+                                            f"Renew to get new containers deployed.",
+                                            parse_mode="html",
+                                            buttons=[
+                                                [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
+                                                [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
+                                            ]
+                                        )
+                                    except Exception as e:
+                                        logger.error(
+                                            f"[PRE_EXPIRY] Failed to notify {notify_user_id}: {e}"
+                                        )
+                                _pre_expiry_deletion_sent[notify_key] = True
+
+                    except Exception as ee:
+                        logger.exception(f"[REMINDER] Error processing active user entry: {ee}")
+
+            # ===================================================================
+            # PHASE 2: DB FALLBACK — clean up expired containers from database
+            # ===================================================================
+            try:
+                active_containers = list(deployed_apps_col.find({"status": "active"}))
+
+                for container in active_containers:
+                    try:
+                        app_name         = container.get("app_name")
+                        username         = container.get("username")
+                        container_uid    = container.get("user_id")
+                        expires_at       = container.get("expires_at")
+
+                        if not app_name or not expires_at:
+                            continue
+
+                        if isinstance(expires_at, str):
+                            expires_at = _parse_iso_datetime(expires_at)
+
+                        if not expires_at:
+                            continue
+
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+                        seconds_left = (expires_at - now).total_seconds()
+
+                        if seconds_left <= 60:
+                            deletion_key = f"db_cleanup_{app_name}"
+                            if _expired_cleanup_sent.get(deletion_key):
+                                continue
+
+                            logger.info(
+                                f"[DB_CLEANUP] Found expired/soon-to-expire container: "
+                                f"{app_name} for @{username}"
+                            )
+
+                            delete_ok, delete_resp = await asyncio.to_thread(
+                                delete_deployed_app, app_name
+                            )
+
+                            if delete_ok:
+                                deployed_apps_col.update_one(
+                                    {"app_name": app_name},
+                                    {"$set": {
+                                        "status": "expired_deleted",
+                                        "deleted_at": now,
+                                        "deletion_reason": "subscription_expired"
+                                    }}
+                                )
+                                api_subscriptions_col.update_many(
+                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
+                                    {"$set": {
+                                        "status": "expired_deleted",
+                                        "deleted_at": now,
+                                        "deletion_reason": "subscription_expired"
+                                    }}
+                                )
+
+                                if container_uid:
+                                    try:
+                                        await bot.send_message(
+                                            container_uid,
+                                            f"⏰ <b>Subscription Expired</b>\n\n"
+                                            f"Your API Claimer subscription has expired.\n"
+                                            f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
+                                            f"Renew to get new containers deployed.",
+                                            parse_mode="html",
+                                            buttons=[
+                                                [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
+                                                [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
+                                            ]
+                                        )
+                                    except Exception as e:
+                                        logger.error(
+                                            f"[DB_CLEANUP] Failed to notify {container_uid}: {e}"
+                                        )
+
+                                logger.info(f"[DB_CLEANUP] ✅ Deleted container: {app_name}")
+                            else:
+                                logger.error(
+                                    f"[DB_CLEANUP] ❌ Failed to delete {app_name}: {delete_resp}"
+                                )
+
+                            _expired_cleanup_sent[deletion_key] = True
+
                     except Exception as e:
-                        logger.exception(f"Error processing container from DB: {e}")
-                        
+                        logger.exception(f"[DB_CLEANUP] Error processing container: {e}")
+
             except Exception as e:
-                logger.exception(f"Error in DB container cleanup phase: {e}")
-        
+                logger.exception(f"[DB_CLEANUP] Phase 2 error: {e}")
+
         except Exception as e:
-            logger.exception(f"check_active_users_loop error: {e}")
+            logger.exception(f"check_active_users_loop top-level error: {e}")
 
         await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
 
@@ -1172,7 +1268,7 @@ async def apicstats_handler(event):
     
     api_users = []
     if api_data and isinstance(api_data, dict):
-        api_users = api_data.get("active_users", [])
+        api_users = _extract_active_users_list(api_data)
     
     db_containers = list(deployed_apps_col.find({"product_type": "api_claimer"}))
     
@@ -1202,7 +1298,7 @@ async def apicstats_handler(event):
             expires_raw = user.get("expires")
             
             if expires_raw:
-                expires_dt = _parse_iso_datetime(expires_raw)
+                expires_dt = _parse_iso_datetime(str(expires_raw))
                 if expires_dt:
                     if expires_dt.tzinfo is None:
                         expires_dt = expires_dt.replace(tzinfo=timezone.utc)
@@ -1439,7 +1535,7 @@ async def extend_time_handler(event):
                                                 (FARMER_API_URL if product_arg == "farmer" else CLAIMER_API_URL))
             new_expiry_str = "N/A"
             if api_data and isinstance(api_data, dict):
-                for u in api_data.get("active_users", []):
+                for u in _extract_active_users_list(api_data):
                     if u.get("username", "").lower().lstrip("@") == target_username.lower():
                         new_expiry_str = u.get("expires", "N/A")
                         break
@@ -2024,38 +2120,35 @@ async def terminate_sub_menu_handler(event):
     
     data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
     if data_claimer:
-        users = data_claimer.get("active_users", [])
-        if isinstance(users, list):
-            for u in users:
-                if u.get("username", "").lower().lstrip("@") == username.lower():
-                    expires = _parse_iso_datetime(u.get("expires"))
-                    if expires:
-                        active_details = (CLAIMER_API_URL, expires, "Code Claimer")
-                        break
+        users = _extract_active_users_list(data_claimer)
+        for u in users:
+            if u.get("username", "").lower().lstrip("@") == username.lower():
+                expires = _parse_iso_datetime(str(u.get("expires", "")))
+                if expires:
+                    active_details = (CLAIMER_API_URL, expires, "Code Claimer")
+                    break
 
     if not active_details:
         data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
         if data_farmer:
-            users = data_farmer.get("active_users", [])
-            if isinstance(users, list):
-                for u in users:
-                    if u.get("username", "").lower().lstrip("@") == username.lower():
-                        expires = _parse_iso_datetime(u.get("expires"))
-                        if expires:
-                            active_details = (FARMER_API_URL, expires, "Chat Farmer")
-                            break
+            users = _extract_active_users_list(data_farmer)
+            for u in users:
+                if u.get("username", "").lower().lstrip("@") == username.lower():
+                    expires = _parse_iso_datetime(str(u.get("expires", "")))
+                    if expires:
+                        active_details = (FARMER_API_URL, expires, "Chat Farmer")
+                        break
 
     if not active_details:
         data_api_claimer = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
         if data_api_claimer:
-            users = data_api_claimer.get("active_users", [])
-            if isinstance(users, list):
-                for u in users:
-                    if u.get("username", "").lower().lstrip("@") == username.lower():
-                        expires = _parse_iso_datetime(u.get("expires"))
-                        if expires:
-                            active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
-                            break
+            users = _extract_active_users_list(data_api_claimer)
+            for u in users:
+                if u.get("username", "").lower().lstrip("@") == username.lower():
+                    expires = _parse_iso_datetime(str(u.get("expires", "")))
+                    if expires:
+                        active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
+                        break
     
     if not active_details:
         session = user_sessions.setdefault(user_id, {})
@@ -2146,10 +2239,8 @@ async def terminate_execute_handler(event):
     await event.edit("⏳ Terminating subscription on all services...", parse_mode="html")
 
     # ===== CALL ALL THREE PRODUCT APIs TO DELETE USER =====
-    # This ensures the user is fully removed from every product, not just the active one.
     all_api_urls = [CLAIMER_API_URL, FARMER_API_URL, API_CLAIMER_AUTH_URL]
     
-    # Deduplicate in case any URLs are the same (e.g. CLAIMER and API_CLAIMER share URL)
     seen_urls = set()
     unique_api_urls = []
     for u in all_api_urls:
@@ -2166,9 +2257,7 @@ async def terminate_execute_handler(event):
             any_success = True
         logger.info(f"[TERMINATE] delete_user_api on {del_url} for @{username}: {'ok' if ok else 'failed'}")
 
-    # ===== ALWAYS DELETE API CLAIMER CONTAINERS (regardless of product) =====
-    # Whether the active product is Claimer, Farmer, or API Claimer,
-    # we always clean up any deployed containers for this username.
+    # ===== ALWAYS DELETE API CLAIMER CONTAINERS =====
     container_lines = []
     try:
         deployed_apps_list = list(deployed_apps_col.find({"username": username, "status": "active"}))
@@ -2344,38 +2433,35 @@ async def text_input_handler(event):
         
         data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
         if data_claimer:
-            users = data_claimer.get("active_users", [])
-            if isinstance(users, list):
-                for u in users:
-                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
-                        expires = _parse_iso_datetime(u.get("expires"))
-                        if expires:
-                            active_details = (CLAIMER_API_URL, expires, "Code Claimer")
-                            break
+            users = _extract_active_users_list(data_claimer)
+            for u in users:
+                if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                    expires = _parse_iso_datetime(str(u.get("expires", "")))
+                    if expires:
+                        active_details = (CLAIMER_API_URL, expires, "Code Claimer")
+                        break
 
         if not active_details:
             data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
             if data_farmer:
-                users = data_farmer.get("active_users", [])
-                if isinstance(users, list):
-                    for u in users:
-                        if u.get("username", "").lower().lstrip("@") == target_username.lower():
-                            expires = _parse_iso_datetime(u.get("expires"))
-                            if expires:
-                                active_details = (FARMER_API_URL, expires, "Chat Farmer")
-                                break
+                users = _extract_active_users_list(data_farmer)
+                for u in users:
+                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                        expires = _parse_iso_datetime(str(u.get("expires", "")))
+                        if expires:
+                            active_details = (FARMER_API_URL, expires, "Chat Farmer")
+                            break
 
         if not active_details:
             data_api_claimer = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
             if data_api_claimer:
-                users = data_api_claimer.get("active_users", [])
-                if isinstance(users, list):
-                    for u in users:
-                        if u.get("username", "").lower().lstrip("@") == target_username.lower():
-                            expires = _parse_iso_datetime(u.get("expires"))
-                            if expires:
-                                active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
-                                break
+                users = _extract_active_users_list(data_api_claimer)
+                for u in users:
+                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
+                        expires = _parse_iso_datetime(str(u.get("expires", "")))
+                        if expires:
+                            active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
+                            break
         
         if not active_details:
             await event.respond(
@@ -2396,14 +2482,13 @@ async def text_input_handler(event):
         else:
             remaining_hours = 0
 
-        # Calculate refund based on correct product rate
         refund_amount = 0.0
         if remaining_hours > 0:
             if product_name == "Code Claimer":
                 refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
             elif product_name == "API Claimer":
                 refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
-            else:  # Chat Farmer
+            else:
                 refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
                 
         refund_amount = round(refund_amount, 2)
@@ -2564,7 +2649,6 @@ async def skip_session_token_2_handler(event):
         return await event.respond("Session expired. Restart with /start.")
     
     session["expecting_session_token_2"] = False
-    # Don't set session_token_2 - it stays None/missing
     
     username_clean = session.get("username", "UNKNOWN")
     
