@@ -269,7 +269,7 @@ def generate_unique_app_name(username: str, suffix_tag: str = ""):
 
 def build_api_claimer_status_url(username: str):
     clean_user = username.lstrip("@").strip()
-    return f"https://code-dash.kustbotsweb.workers.dev/api-cl?user={clean_user}"
+    return f"https://rebate.vibeshiftbots.workers.dev/api-cl?user={clean_user}"
 
 def deploy_api_container(session_token: str, app_name: str, deploy_url: str, mirror_site: str, progress_callback=None):
     """
