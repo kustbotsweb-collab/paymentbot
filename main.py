@@ -15,9 +15,9 @@ API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
 BOT_TOKEN = "8647459018:AAF-ybONLMi9I0mBMgjVWEF0zyqbnb29yIU"
 
-SUPPORT_CHAT_LINK = "https://t.me/KustXoffical"
-UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
-UPI_DM_LINK = "https://t.me/KustXoffical"
+SUPPORT_CHAT_LINK = "https://t.me/Rabit0505"
+UPDATES_CHANNEL_LINK = "https://t.me/Rabit0505"
+UPI_DM_LINK = "https://t.me/Rabit0505"
 
 # --- Code Claimer Assets ---
 CLAIMER_API_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"
@@ -46,7 +46,7 @@ API_CLAIMER_FORWARD_2 = ("kustvault", 9)
 API_CLAIMER_FORWARD_3 = ("kustvault", 10)
 
 # Start image
-START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c14bc87a40b4b6a9973"
+START_IMAGE_URL = "https://rebatestarting.vibeshiftbots.workers.dev/"
 
 # MongoDB
 MONGO_URL = "mongodb+srv://kustbotsweb_db_user:z7YqNFmFOvVHKl4B@kust-payments.hiin3lu.mongodb.net/?appName=kust-payments"
