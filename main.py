@@ -22,16 +22,15 @@ UPI_DM_LINK = "https://t.me/Rabit0505"
 # --- Code Claimer Assets ---
 CLAIMER_API_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"
 # Forwards for Claimer (Proof channels)
-CLAIMER_FORWARD_1 = ("kustvault", 5)
-CLAIMER_FORWARD_2 = ("kustvault", 6)
-CLAIMER_FORWARD_3 = ("kustvault", 7)
+CLAIMER_FORWARD_1 = ("rebateautomations", 5)  # 1st: the claimer file
+CLAIMER_FORWARD_2 = ("rebateautomations", 6)  # 2nd: setup video
 
 # --- API Claimer Assets ---
 API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
 
 # DUAL DEPLOY URLS — Deploy 1 uses stake.bet, Deploy 2 uses stake.pet
 API_CLAIMER_DEPLOY_URL_1 = "https://claimer-api-deploy-600865844b28.herokuapp.com"   # CHANGE THIS — Deploy 1 (stake.bet)
-API_CLAIMER_DEPLOY_URL_2 = "https://api-claimer-deploy-56b940d35d3a.herokuapp.com"       # CHANGE THIS — Deploy 2 (stake.pet)
+API_CLAIMER_DEPLOY_URL_2 = "https://api-claimer-deploy-56b940d35d3a.herokuapp.com"        # CHANGE THIS — Deploy 2 (stake.pet)
 
 API_CLAIMER_AUTH_TOKEN = "fuck1234"  # CHANGE THIS to your deploy API auth token
 API_CLAIMER_REGION = "eu"  # Deploy region
@@ -39,11 +38,6 @@ API_CLAIMER_REGION = "eu"  # Deploy region
 # Mirror sites for dual deployment
 API_CLAIMER_MIRROR_SITE_1 = "stake.bet"
 API_CLAIMER_MIRROR_SITE_2 = "stake.pet"
-
-# Forwards for API Claimer (Using same vault, change if needed)
-API_CLAIMER_FORWARD_1 = ("kustvault", 8)
-API_CLAIMER_FORWARD_2 = ("kustvault", 9)
-API_CLAIMER_FORWARD_3 = ("kustvault", 10)
 
 # Start image
 START_IMAGE_URL = "https://rebatestarting.vibeshiftbots.workers.dev/"
@@ -284,7 +278,6 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, mir
             "Content-Type": "application/json",
             "Accept": "text/event-stream"
         }
-        # FIXED: MIRROR_SITE as top-level field alongside session_token and app_name
         payload = {
             "session_token": session_token,
             "app_name": app_name,
@@ -389,7 +382,7 @@ def extract_status_from_query_response(resp_json):
 # ================== DUAL DEPLOY PROGRESS ANIMATION ==================
 
 async def animate_dual_deploy_progress(user_id: int, username_clean: str,
-                                        session_token_1: str, session_token_2: str):
+                                       session_token_1: str, session_token_2: str):
     """
     Deploy TWO containers concurrently:
       - Container 1: deploy_url_1, mirror_site=stake.bet, session_token_1
@@ -490,36 +483,19 @@ async def animate_dual_deploy_progress(user_id: int, username_clean: str,
     ok2 = progress_state[2]["success"]
     res2 = progress_state[2]["result"]
 
-    # Build final summary message
     status_url = build_api_claimer_status_url(username_clean)
 
-    lines = [f"<b>🔧 Dual Deploy Summary</b>\n"]
-
-    if ok1:
-        lines.append(f"✅ <b>Container 1</b> — <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — Deployed!")
-    else:
-        err1 = get_user_friendly_deploy_error(res1)
-        lines.append(f"❌ <b>Container 1</b> — <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — {err1}")
-
-    if ok2:
-        lines.append(f"✅ <b>Container 2</b> — <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — Deployed!")
-    else:
-        err2 = get_user_friendly_deploy_error(res2)
-        lines.append(f"❌ <b>Container 2</b> — <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — {err2}")
-
     if ok1 or ok2:
-        lines.append("\n🎉 At least one container is live. Use the button to check your claim status.")
+        final_text = f"✅ Deployed successfully!\n\nDashboard URL: {status_url}"
+        buttons = [[Button.url("📊 Dashboard", status_url)]]
     else:
-        lines.append("\nBoth deployments failed. Please contact support.")
-
-    buttons = [[Button.url("📊 View Live Status", status_url)]] if (ok1 or ok2) else None
-    if not (ok1 or ok2):
+        final_text = "⚠️ Deployments failed. Please contact support."
         buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
 
     try:
         await bot.edit_message(
             user_id, progress_msg.id,
-            "\n".join(lines),
+            final_text,
             parse_mode="html",
             buttons=buttons
         )
@@ -547,11 +523,11 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
         if product_type == "api_claimer":
             api_url = API_CLAIMER_AUTH_URL
             product_name = "API Rebate Claimer"
-            forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
+            forwards = []
         else:
             api_url = CLAIMER_API_URL
             product_name = "Code Rebate Claimer"
-            forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
+            forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2]
 
     start = time.time()
     while time.time() - start < PAYMENT_TIMEOUT:
@@ -625,8 +601,6 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         logger.error(f"Error processing referral reward: {e}")
 
                 # === API CLAIMER SPECIFIC: DUAL DEPLOY CONTAINERS ===
-                deploy_message = ""
-                deploy_buttons = None
                 if product_type == "api_claimer":
                     session_token_1 = session.get("session_token")
                     session_token_2 = session.get("session_token_2")
@@ -679,50 +653,30 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                             },
                             upsert=True
                         )
-
-                        status_url = build_api_claimer_status_url(username_clean)
-                        if ok1 or ok2:
-                            deploy_buttons = [[Button.url("📊 View Live Status", status_url)]]
-                            deploy_message = (
-                                f"\n\n✅ <b>Dual Containers Deployed!</b>\n"
-                                f"• <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — {'✅' if ok1 else '❌'}\n"
-                                f"• <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — {'✅' if ok2 else '❌'}\n"
-                                f"Region: <b>{API_CLAIMER_REGION.upper()}</b>"
-                            )
-                        else:
-                            err1 = get_user_friendly_deploy_error(res1)
-                            err2 = get_user_friendly_deploy_error(res2)
-                            deploy_message = (
-                                f"\n\n⚠️ <b>Both container deployments failed.</b>\n"
-                                f"• Container 1: {err1}\n"
-                                f"• Container 2: {err2}\n"
-                                f"Your subscription is active. Contact support."
-                            )
-                            deploy_buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
-                            logger.error(f"Both deploys failed for user {user_id}")
                     elif session_token_1:
                         # Only one key provided
-                        deploy_message = (
-                            f"\n\n⚠️ <b>Second API key missing.</b>\n"
-                            f"Only one container can be deployed. Contact support to provide the second API key."
+                        await bot.send_message(
+                            user_id,
+                            f"⚠️ <b>Second API key missing.</b>\nOnly one container can be deployed. Contact support.",
+                            parse_mode="html",
+                            buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
                         )
                     else:
-                        deploy_message = (
-                            f"\n\n⚠️ <b>API keys not found.</b>\n"
-                            f"Please contact support to deploy your containers manually."
+                        await bot.send_message(
+                            user_id,
+                            f"⚠️ <b>API keys not found.</b>\nContact support to deploy your containers manually.",
+                            parse_mode="html",
+                            buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
                         )
-
-                # Notify user
-                await bot.send_message(
-                    user_id,
-                    f"✅ Payment confirmed!\n\n"
-                    f"Your <b>{product_name} — {plan_label}</b> subscription is activated.\n"
-                    f"Stake Username: <code>@{username_clean}</code>\n"
-                    f"Duration: <b>{hours} hours</b>."
-                    f"{deploy_message}",
-                    parse_mode="html",
-                    buttons=deploy_buttons
-                )
+                else:
+                    await bot.send_message(
+                        user_id,
+                        f"✅ Payment confirmed!\n\n"
+                        f"Your <b>{product_name} — {plan_label}</b> subscription is activated.\n"
+                        f"Stake Username: <code>@{username_clean}</code>\n"
+                        f"Duration: <b>{hours} hours</b>.",
+                        parse_mode="html"
+                    )
 
                 # FORWARD + PIN
                 for chat, msg_id in forwards:
@@ -2762,7 +2716,7 @@ async def buy_crypto_handler(event):
     session = user_sessions.get(user_id)
 
     if not session or "username" not in session:
-        return await event.respond("Restart with /start and send your username.")
+        return await event.respond("Restart with /start and send your username first.")
 
     prod = session.get("product", "claimer")
     if prod == "api_claimer":
@@ -2951,11 +2905,11 @@ async def pay_points_handler(event):
     if prod == "api_claimer":
         api_url = API_CLAIMER_AUTH_URL
         prod_name = "API Rebate Claimer"
-        forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
+        forwards = []
     else:
         api_url = CLAIMER_API_URL
         prod_name = "Code Rebate Claimer"
-        forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
+        forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2]
     
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
@@ -2971,10 +2925,13 @@ async def pay_points_handler(event):
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
     
     if activation_ok:
-        # === API CLAIMER: DUAL DEPLOY CONTAINERS ===
-        deploy_message = ""
-        deploy_buttons = None
         if prod == "api_claimer":
+            try:
+                await event.delete()
+            except:
+                pass
+            
+            # === API CLAIMER: DUAL DEPLOY CONTAINERS ===
             session_token_1 = session.get("session_token")
             session_token_2 = session.get("session_token_2")
             if session_token_1 and session_token_2:
@@ -3025,37 +2982,30 @@ async def pay_points_handler(event):
                     },
                     upsert=True
                 )
-
-                status_url = build_api_claimer_status_url(username_clean)
-                if ok1 or ok2:
-                    deploy_buttons = [[Button.url("📊 View Live Status", status_url)]]
-                    deploy_message = (
-                        f"\n\n✅ <b>Dual Containers Deployed!</b>\n"
-                        f"• <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — {'✅' if ok1 else '❌'}\n"
-                        f"• <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — {'✅' if ok2 else '❌'}\n"
-                        f"Region: <b>{API_CLAIMER_REGION.upper()}</b>"
-                    )
-                else:
-                    err1 = get_user_friendly_deploy_error(res1)
-                    err2 = get_user_friendly_deploy_error(res2)
-                    deploy_message = (
-                        f"\n\n⚠️ <b>Both deployments failed.</b>\n"
-                        f"• Container 1: {err1}\n"
-                        f"• Container 2: {err2}\n"
-                        f"Contact support for manual deployment."
-                    )
-                    deploy_buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
             elif session_token_1:
-                deploy_message = (
-                    f"\n\n⚠️ <b>Second API key missing.</b>\n"
-                    f"Only one container can be deployed. Contact support."
+                await bot.send_message(
+                    user_id,
+                    "⚠️ <b>Second API key missing.</b>\nOnly one container can be deployed. Contact support.",
+                    parse_mode="html",
+                    buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
                 )
             else:
-                deploy_message = (
-                    f"\n\n⚠️ <b>No API keys provided.</b>\n"
-                    f"Contact support to deploy your containers manually."
+                await bot.send_message(
+                    user_id,
+                    "⚠️ <b>No API keys provided.</b>\nContact support to deploy your containers manually.",
+                    parse_mode="html",
+                    buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
                 )
-        
+        else:
+            await event.edit(
+                f"✅ <b>Paid with Points!</b>\n\n"
+                f"Your <b>{prod_name} — {label}</b> subscription is activated.\n"
+                f"Deducted: <b>{amount} Points</b>\n"
+                f"Remaining: <b>{user_points - amount:.2f} Points</b>\n"
+                f"Duration: <b>{hours} hours</b>.",
+                parse_mode="html"
+            )
+
         # FORWARD + PIN
         for chat, msg_id in forwards:
             try:
@@ -3069,16 +3019,6 @@ async def pay_points_handler(event):
                 except: pass
             except: pass
             
-        await event.edit(
-            f"✅ <b>Paid with Points!</b>\n\n"
-            f"Your <b>{prod_name} — {label}</b> subscription is activated.\n"
-            f"Deducted: <b>{amount} Points</b>\n"
-            f"Remaining: <b>{user_points - amount:.2f} Points</b>\n"
-            f"Duration: <b>{hours} hours</b>."
-            f"{deploy_message}",
-            parse_mode="html",
-            buttons=deploy_buttons
-        )
     else:
         users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
         await event.edit("❌ Activation failed. Points refunded. Contact support.", parse_mode="html")
