@@ -22,8 +22,8 @@ UPI_DM_LINK = "https://t.me/Rabit0505"
 # --- Code Claimer Assets ---
 CLAIMER_API_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"
 # Forwards for Claimer (Proof channels)
-CLAIMER_FORWARD_1 = ("rebateautomations", 5)  # 1st: the claimer file
-CLAIMER_FORWARD_2 = ("rebateautomations", 6)  # 2nd: setup video
+CLAIMER_FORWARD_1 = ("rebateautomations", 1)  # 1st: the claimer file
+CLAIMER_FORWARD_2 = ("rebateautomations", 2)  # 2nd: setup video
 
 # --- API Claimer Assets ---
 API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
