@@ -82,11 +82,11 @@ PLAN_1D_API_CLAIMER = {"label": "1 Day", "amount": 3.0, "hours": 24}
 
 # Plans (Exclusive to API Claimer)
 PLANS_API_CLAIMER = {
-    "1d":  {"label": "1 Day",    "amount": 5.0,  "hours": 12},
+    "1d":  {"label": "1 Day",    "amount": 4.0,  "hours": 12},
     "3d":  {"label": "3 Days",   "amount": 7.5,  "hours": 72},
-    "7d":  {"label": "7 Days",   "amount": 10.0, "hours": 168},
+    "7d":  {"label": "7 Days",   "amount": 8.0, "hours": 168},
     "14d": {"label": "14 Days",  "amount": 18.0, "hours": 336},
-    "30d": {"label": "30 Days",  "amount": 30.0, "hours": 720},
+    "30d": {"label": "30 Days",  "amount": 25.0, "hours": 720},
 }
 
 # --- BULK POINTS PACKAGES ---
