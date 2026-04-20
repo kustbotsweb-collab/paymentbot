@@ -2701,7 +2701,7 @@ async def buy_upi_handler(event):
     text = (
         "<tg-emoji emoji-id='6325705628291436771'>💵</tg-emoji> <b>Pay with UPI</b>\n\n"
         "DM admin and mention your Stake username:\n"
-        f"👉 <a href=\"{UPI_DM_LINK}\">@KustXoffical</a>"
+        f"👉 <a href=\"{UPI_DM_LINK}\">Rabbit</a>"
     )
     buttons = [[Button.url("💬 DM for UPI Payment", UPI_DM_LINK)]]
     try:
