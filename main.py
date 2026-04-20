@@ -13,7 +13,7 @@ from pymongo import MongoClient
 
 API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
-BOT_TOKEN = "8647459018:AAF-ybONLMi9I0mBMgjVWEF0zyqbnb29yIU"
+BOT_TOKEN = "8573345038:AAEppbd1tFOP5NEq0AzJcjBM9moDkves5eQ"
 
 SUPPORT_CHAT_LINK = "https://t.me/Rabit0505"
 UPDATES_CHANNEL_LINK = "https://t.me/Rabit0505"
