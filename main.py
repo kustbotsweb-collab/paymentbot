@@ -39,17 +39,17 @@ API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same
 API_CLAIMER_BATCHES = [
     {
         "batch_id": 1,
-        "url_1": "https://claimer-api-deploy-600865844b28.herokuapp.com",   # Deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-deploy-56b940d35d3a.herokuapp.com",   # Deploy 2 (stake.pet)
+        "url_1": "https://api-claimer-1-a0328d2f6f1d.herokuapp.com",   # Deploy 1 (stake.bet)
+        "url_2": "https://api-claimer-2-db2d49c4887d.herokuapp.com",   # Deploy 2 (stake.pet)
         "token": "fuck1234",
-        "limit": 98
+        "limit": 99
     },
     {
         "batch_id": 2,
-        "url_1": "https://batch2-claimer-deploy-1.herokuapp.com",           # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
-        "url_2": "https://batch2-claimer-deploy-2.herokuapp.com",           # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
+        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",           # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
+        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",           # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
         "token": "fuck1234",                                                # CHANGE THIS if batch 2 token differs
-        "limit": 98
+        "limit": 99
     }
 ]
 
