@@ -28,11 +28,25 @@ CLAIMER_FORWARD_2 = ("rebateautomations", 3)  # 2nd: setup video
 # --- API Claimer Assets ---
 API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
 
-# DUAL DEPLOY URLS — Deploy 1 uses stake.bet, Deploy 2 uses stake.pet
-API_CLAIMER_DEPLOY_URL_1 = "https://api-claimer-1-a0328d2f6f1d.herokuapp.com"   # CHANGE THIS — Deploy 1 (stake.bet)
-API_CLAIMER_DEPLOY_URL_2 = "https://api-claimer-2-db2d49c4887d.herokuapp.com"        # CHANGE THIS — Deploy 2 (stake.pet)
+# DUAL DEPLOY URLS (Batches for Load Distribution)
+# Per batch limit is 99. Once Batch 1 reaches 99 active containers, it routes to Batch 2.
+API_CLAIMER_BATCHES = [
+    {
+        "batch_id": 1,
+        "url_1": "https://api-claimer-1-a0328d2f6f1d.herokuapp.com",   # Deploy 1 (stake.bet)
+        "url_2": "https://api-claimer-2-db2d49c4887d.herokuapp.com",   # Deploy 2 (stake.pet)
+        "token": "fuck1234",
+        "limit": 99
+    },
+    {
+        "batch_id": 2,
+        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",   # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
+        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",   # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
+        "token": "fuck1234",                                           # CHANGE THIS if batch 2 token differs
+        "limit": 99
+    }
+]
 
-API_CLAIMER_AUTH_TOKEN = "fuck1234"  # CHANGE THIS to your deploy API auth token
 API_CLAIMER_REGION = "eu"  # Deploy region
 
 # Mirror sites for dual deployment
@@ -125,6 +139,19 @@ _expired_cleanup_sent = {}
 # Track pre-expiry container deletion to avoid duplicates: { key: True }
 _pre_expiry_deletion_sent = {}
 
+# ================== BATCH MANAGEMENT ==================
+
+def get_available_batch():
+    """Find the first batch that hasn't reached its deployment limit."""
+    for batch in API_CLAIMER_BATCHES:
+        count = deployed_apps_col.count_documents({
+            "deploy_url": batch["url_1"],
+            "status": "active"
+        })
+        if count < batch["limit"]:
+            return batch
+    return None
+
 # ================== ERROR MESSAGE HELPER ==================
 
 def get_user_friendly_deploy_error(error_data):
@@ -142,11 +169,11 @@ def get_user_friendly_deploy_error(error_data):
     
     # Check for Heroku app limit error
     if "app limit" in error_msg.lower() or "reached your app limit" in error_msg.lower():
-        return "All slots are already full. Limit: 1500 max."
+        return "All slots are already full in this batch."
     
     # Check for 422 status with invalid_params
     if "422" in error_msg and "invalid_params" in error_msg:
-        return "All slots are already full. Limit: 1500 max."
+        return "All slots are already full in this batch."
     
     # Return original error if not app limit
     return error_msg if error_msg else "Unknown error"
@@ -191,16 +218,33 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
 def delete_deployed_app(app_name: str):
     """
     Delete a deployed Heroku app/container via the deploy API.
-    Tries both deploy URLs to ensure cleanup.
+    Checks the DB to find the exact deploy_url, otherwise tries all known batches.
     """
     success_any = False
     last_resp = {}
+    urls_to_try = []
 
-    for deploy_url in [API_CLAIMER_DEPLOY_URL_1, API_CLAIMER_DEPLOY_URL_2]:
+    app_doc = deployed_apps_col.find_one({"app_name": app_name})
+
+    if app_doc and app_doc.get("deploy_url"):
+        target_url = app_doc["deploy_url"]
+        target_token = "fuck1234"  # Default fallback
+        for b in API_CLAIMER_BATCHES:
+            if target_url in [b["url_1"], b["url_2"]]:
+                target_token = b["token"]
+                break
+        urls_to_try.append((target_url, target_token))
+    else:
+        # Fallback: try all urls in all batches
+        for b in API_CLAIMER_BATCHES:
+            urls_to_try.append((b["url_1"], b["token"]))
+            urls_to_try.append((b["url_2"], b["token"]))
+
+    for deploy_url, auth_token in urls_to_try:
         try:
             url = f"{deploy_url}/apps/{app_name}"
             headers = {
-                "Authorization": f"Bearer {API_CLAIMER_AUTH_TOKEN}"
+                "Authorization": f"Bearer {auth_token}"
             }
             
             logger.info(f"[DELETE_APP] Trying to delete container {app_name} via {deploy_url}")
@@ -211,12 +255,14 @@ def delete_deployed_app(app_name: str):
                 logger.info(f"[DELETE_APP] Successfully deleted app: {app_name} via {deploy_url}")
                 success_any = True
                 last_resp = r.json()
+                break  # Stop trying other URLs if successful
             else:
                 response_text = r.text.lower()
                 if "not_found" in response_text or "\"id\":\"not_found\"" in response_text or "couldn't find that app" in response_text:
                     logger.info(f"[DELETE_APP] App {app_name} already deleted (not found) via {deploy_url}")
                     success_any = True
                     last_resp = {"status": "already_deleted", "message": "App was already deleted"}
+                    break  # It's gone, break out
                 else:
                     logger.error(f"[DELETE_APP] Failed via {deploy_url}: {r.status_code} - {r.text}")
                     last_resp = {"error": f"HTTP {r.status_code}: {r.text}"}
@@ -265,7 +311,7 @@ def build_api_claimer_status_url(username: str):
     clean_user = username.lstrip("@").strip()
     return f"https://rebate.vibeshiftbots.workers.dev/api-cl?user={clean_user}"
 
-def deploy_api_container(session_token: str, app_name: str, deploy_url: str, mirror_site: str, progress_callback=None):
+def deploy_api_container(session_token: str, app_name: str, deploy_url: str, auth_token: str, mirror_site: str, progress_callback=None):
     """
     Deploy API container for the user.
     Calls the given deploy_url with the session token, app name, and mirror_site env var.
@@ -274,7 +320,7 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, mir
     try:
         url = f"{deploy_url}/deploy"
         headers = {
-            "Authorization": f"Bearer {API_CLAIMER_AUTH_TOKEN}",
+            "Authorization": f"Bearer {auth_token}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream"
         }
@@ -287,8 +333,8 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, mir
         logger.info(f"[DEPLOY] Deploying container: {app_name} via {deploy_url} (MIRROR_SITE={mirror_site})")
         logger.info(f"[DEPLOY] Payload: session_token=***, app_name={app_name}, MIRROR_SITE={mirror_site}")
         
-        # Use stream=True to handle SSE response
-        r = requests.post(url, headers=headers, json=payload, stream=True, timeout=600)
+        # Use stream=True to handle SSE response. Increased timeout to 60 minutes (3600 seconds).
+        r = requests.post(url, headers=headers, json=payload, stream=True, timeout=3600)
         
         if r.status_code >= 400:
             error_text = r.text
@@ -384,11 +430,19 @@ def extract_status_from_query_response(resp_json):
 async def animate_dual_deploy_progress(user_id: int, username_clean: str,
                                        session_token_1: str, session_token_2: str):
     """
-    Deploy TWO containers concurrently:
-      - Container 1: deploy_url_1, mirror_site=stake.bet, session_token_1
-      - Container 2: deploy_url_2, mirror_site=stake.pet, session_token_2
-    Returns (app_name_1, result_1, app_name_2, result_2) with success flags.
+    Deploy TWO containers concurrently using an available batch.
+    Returns (app_name_1, ok1, res1, app_name_2, ok2, res2, deploy_url_1, deploy_url_2, auth_token).
     """
+    batch = get_available_batch()
+    if not batch:
+        msg = "❌ All deployment slots are currently full across all batches (Limit: 99 per batch). Please contact support to arrange availability."
+        await bot.send_message(user_id, msg)
+        return ("app_1", False, {"error": "All batches full"}, "app_2", False, {"error": "All batches full"}, "", "", "")
+
+    deploy_url_1 = batch["url_1"]
+    deploy_url_2 = batch["url_2"]
+    auth_token = batch["token"]
+
     app_name_1 = generate_unique_app_name(username_clean, "")
     app_name_2 = generate_unique_app_name(username_clean, "-2")
 
@@ -409,7 +463,7 @@ async def animate_dual_deploy_progress(user_id: int, username_clean: str,
             f"   Progress: <b>{s1['progress']}%</b> | {s1['message']}\n\n"
             f"{icon2} <b>Container 2</b> — <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}]\n"
             f"   Progress: <b>{s2['progress']}%</b> | {s2['message']}\n\n"
-            f"Region: <b>{API_CLAIMER_REGION.upper()}</b>"
+            f"Region: <b>{API_CLAIMER_REGION.upper()}</b> | Batch: <b>#{batch['batch_id']}</b>"
         )
 
     progress_msg = await bot.send_message(user_id, render_text(), parse_mode="html")
@@ -442,14 +496,14 @@ async def animate_dual_deploy_progress(user_id: int, username_clean: str,
     task1 = asyncio.create_task(
         asyncio.to_thread(
             deploy_api_container,
-            session_token_1, app_name_1, API_CLAIMER_DEPLOY_URL_1,
+            session_token_1, app_name_1, deploy_url_1, auth_token,
             API_CLAIMER_MIRROR_SITE_1, make_cb(1)
         )
     )
     task2 = asyncio.create_task(
         asyncio.to_thread(
             deploy_api_container,
-            session_token_2, app_name_2, API_CLAIMER_DEPLOY_URL_2,
+            session_token_2, app_name_2, deploy_url_2, auth_token,
             API_CLAIMER_MIRROR_SITE_2, make_cb(2)
         )
     )
@@ -486,7 +540,7 @@ async def animate_dual_deploy_progress(user_id: int, username_clean: str,
     status_url = build_api_claimer_status_url(username_clean)
 
     if ok1 or ok2:
-        final_text = f"✅ Deployed successfully!\n\nDashboard URL: {status_url}"
+        final_text = f"✅ Deployed successfully! (Batch #{batch['batch_id']})\n\nDashboard URL: {status_url}"
         buttons = [[Button.url("📊 Dashboard", status_url)]]
     else:
         final_text = "⚠️ Deployments failed. Please contact support."
@@ -502,7 +556,7 @@ async def animate_dual_deploy_progress(user_id: int, username_clean: str,
     except Exception as e:
         logger.warning(f"Failed to edit final dual deploy message: {e}")
 
-    return app_name_1, ok1, res1, app_name_2, ok2, res2
+    return app_name_1, ok1, res1, app_name_2, ok2, res2, deploy_url_1, deploy_url_2, auth_token
 
 
 async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: int, plan_amount: float, is_bulk_points: bool = False, points_amount: int = 0):
@@ -608,14 +662,20 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         now_dt = datetime.now(timezone.utc)
                         expires_at = now_dt + timedelta(hours=hours)
 
-                        app_name_1, ok1, res1, app_name_2, ok2, res2 = await animate_dual_deploy_progress(
+                        deploy_result = await animate_dual_deploy_progress(
                             user_id, username_clean, session_token_1, session_token_2
                         )
 
+                        if len(deploy_result) == 9:
+                            app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
+                        else:
+                            app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
+                            dep_url_1, dep_url_2, auth_tok = "", "", ""
+
                         # Save both containers to DB
                         for (app_name, ok, res, mirror, deploy_url, tok) in [
-                            (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, API_CLAIMER_DEPLOY_URL_1, session_token_1),
-                            (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, API_CLAIMER_DEPLOY_URL_2, session_token_2),
+                            (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
+                            (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
                         ]:
                             web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
                             deployed_apps_col.insert_one({
@@ -2938,14 +2998,20 @@ async def pay_points_handler(event):
                 now_dt = datetime.now(timezone.utc)
                 expires_at = now_dt + timedelta(hours=hours)
 
-                app_name_1, ok1, res1, app_name_2, ok2, res2 = await animate_dual_deploy_progress(
+                deploy_result = await animate_dual_deploy_progress(
                     user_id, username_clean, session_token_1, session_token_2
                 )
 
+                if len(deploy_result) == 9:
+                    app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
+                else:
+                    app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
+                    dep_url_1, dep_url_2, auth_tok = "", "", ""
+
                 # Save both containers to DB
                 for (app_name, ok, res, mirror, deploy_url, tok) in [
-                    (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, API_CLAIMER_DEPLOY_URL_1, session_token_1),
-                    (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, API_CLAIMER_DEPLOY_URL_2, session_token_2),
+                    (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
+                    (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
                 ]:
                     web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
                     deployed_apps_col.insert_one({
@@ -3141,7 +3207,7 @@ async def broadcast_handler(event):
 # ================== MAIN ==================
 
 def main():
-    logger.info("Rebate Buy Bot (Dual Deploy API Claimer) is running...")
+    logger.info("Rebate Buy Bot (Dual Batch API Claimer) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
