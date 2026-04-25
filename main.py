@@ -29,8 +29,8 @@ CLAIMER_FORWARD_2 = ("rebateautomations", 3)  # 2nd: setup video
 API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
 
 # DUAL DEPLOY URLS — Deploy 1 uses stake.bet, Deploy 2 uses stake.pet
-API_CLAIMER_DEPLOY_URL_1 = "https://claimer-api-deploy-600865844b28.herokuapp.com"   # CHANGE THIS — Deploy 1 (stake.bet)
-API_CLAIMER_DEPLOY_URL_2 = "https://api-claimer-deploy-56b940d35d3a.herokuapp.com"        # CHANGE THIS — Deploy 2 (stake.pet)
+API_CLAIMER_DEPLOY_URL_1 = "https://api-claimer-1-a0328d2f6f1d.herokuapp.com"   # CHANGE THIS — Deploy 1 (stake.bet)
+API_CLAIMER_DEPLOY_URL_2 = "https://api-claimer-2-db2d49c4887d.herokuapp.com"        # CHANGE THIS — Deploy 2 (stake.pet)
 
 API_CLAIMER_AUTH_TOKEN = "fuck1234"  # CHANGE THIS to your deploy API auth token
 API_CLAIMER_REGION = "eu"  # Deploy region
