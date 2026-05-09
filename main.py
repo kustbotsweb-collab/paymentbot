@@ -43,7 +43,7 @@ API_CLAIMER_BATCHES = [
         "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",   # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
         "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",   # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
         "token": "fuck1234",                                           # CHANGE THIS if batch 2 token differs
-        "limit": 99
+        "limit": 0
     }
 ]
 
