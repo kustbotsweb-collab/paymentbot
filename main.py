@@ -39,8 +39,8 @@ API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same
 API_CLAIMER_BATCHES = [
     {
         "batch_id": 1,
-        "url_1": "https://api-claimer-1-a0328d2f6f1d.herokuapp.com",   # Deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-2-db2d49c4887d.herokuapp.com",   # Deploy 2 (stake.pet)
+        "url_1": "https://api-claimer-2-db2d49c4887d.herokuapp.com",   # Deploy 1 (stake.bet)
+        "url_2": "https://api-claimer-1-a0328d2f6f1d.herokuapp.com",   # Deploy 2 (stake.pet)
         "token": "fuck1234",
         "limit": 95
     },
