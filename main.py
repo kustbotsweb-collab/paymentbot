@@ -1277,6 +1277,81 @@ async def check_active_users_loop():
 
         await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
 
+async def sync_db_with_api_loop():
+    await asyncio.sleep(15)  # Offset slightly from the other loop
+    logger.info("Starting 30-min API sync loop to clear inactive DB entries...")
+    
+    api_sources = {
+        "api_claimer": API_CLAIMER_AUTH_URL,
+        "claimer": CLAIMER_API_URL,
+        "farmer": FARMER_API_URL
+    }
+    
+    while True:
+        try:
+            logger.info("[SYNC] Running 30-min sync to clear inactive DB entries...")
+            now = datetime.now(timezone.utc)
+            
+            # Fetch active users from APIs
+            active_users_by_product = {}
+            for prod, url in api_sources.items():
+                try:
+                    data = await asyncio.to_thread(get_active_users, url)
+                    users = _extract_active_users_list(data)
+                    active_usernames = set()
+                    for u in users:
+                        un = u.get("username") or u.get("user") or u.get("name")
+                        if un:
+                            active_usernames.add(un.lstrip("@").lower())
+                    active_users_by_product[prod] = active_usernames
+                except Exception as e:
+                    logger.error(f"[SYNC] Failed to fetch active users for {prod}: {e}")
+                    active_users_by_product[prod] = None # Mark as failed so we don't accidentally delete
+                    
+            # Check deployed_apps_col (API Claimer specific)
+            active_containers = list(deployed_apps_col.find({"status": "active"}))
+            
+            for container in active_containers:
+                username = container.get("username", "").lower()
+                app_name = container.get("app_name")
+                prod_type = container.get("product_type", "api_claimer")
+                
+                api_active_list = active_users_by_product.get(prod_type)
+                
+                # If API fetch failed, skip to be safe
+                if api_active_list is None:
+                    continue
+                    
+                # If username is NOT in the API's active list
+                if username and username not in api_active_list:
+                    logger.info(f"[SYNC] Container {app_name} for @{username} not found on {prod_type} API. Terminating...")
+                    
+                    if app_name:
+                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
+                        
+                        deployed_apps_col.update_one(
+                            {"app_name": app_name},
+                            {"$set": {
+                                "status": "terminated_sync",
+                                "terminated_at": now,
+                                "deletion_reason": "api_sync_not_found"
+                            }}
+                        )
+                        api_subscriptions_col.update_many(
+                            {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
+                            {"$set": {
+                                "status": "terminated_sync",
+                                "terminated_at": now,
+                                "deletion_reason": "api_sync_not_found"
+                            }}
+                        )
+                        logger.info(f"[SYNC] Deleted container {app_name}: {'ok' if delete_ok else 'failed'}")
+                    
+        except Exception as e:
+            logger.exception(f"[SYNC] Error in sync_db_with_api_loop: {e}")
+            
+        await asyncio.sleep(30 * 60)  # 30 minutes
+
 # ================== ADD POINTS COMMAND ==================
 @bot.on(events.NewMessage(pattern=r"^/add\s"))
 async def add_points_handler(event):
@@ -1966,26 +2041,6 @@ async def help_handler(event):
 async def manage_subs_menu_handler(event):
     await event.answer()
     user_id = event.sender_id
-    user_doc = users_col.find_one({"user_id": user_id})
-    session = user_sessions.setdefault(user_id, {})
-
-    if not user_doc or not user_doc.get("password"):
-        session["expecting_setup_password"] = True
-        await event.edit(
-            "🔒 **Security Setup**\n\nPlease set a password to manage your subscriptions. Type your new password below:",
-            parse_mode="markdown"
-        )
-        return
-
-    if not session.get("auth_passed"):
-        session["expecting_auth_password"] = True
-        await event.edit(
-            "🔒 **Authentication Required**\n\nPlease type your password to access the management menu:",
-            parse_mode="markdown",
-            buttons=[[Button.inline("🔙 Cancel", b"back_to_start")]]
-        )
-        return
-
     await show_management_menu(event, user_id)
 
 async def show_management_menu(event_or_msg, user_id):
@@ -2555,38 +2610,6 @@ async def text_input_handler(event):
     
     raw_text = event.raw_text.strip()
     if raw_text.startswith("/"):
-        return
-
-    # --- HANDLE PASSWORD SETUP ---
-    if session.get("expecting_setup_password"):
-        session["expecting_setup_password"] = False
-        users_col.update_one({"user_id": user_id}, {"$set": {"password": raw_text}})
-        session["auth_passed"] = True
-        msg = await event.respond("✅ Password set successfully!")
-        await show_management_menu(msg, user_id)
-        try:
-            await event.delete()
-        except:
-            pass
-        return
-
-    # --- HANDLE PASSWORD AUTH ---
-    if session.get("expecting_auth_password"):
-        session["expecting_auth_password"] = False
-        user_doc = users_col.find_one({"user_id": user_id})
-        if user_doc and user_doc.get("password") == raw_text:
-            session["auth_passed"] = True
-            msg = await event.respond("✅ Access Granted.")
-            await show_management_menu(msg, user_id)
-        else:
-            await event.respond(
-                "❌ Incorrect password. Try clicking Manage Subscriptions again.",
-                buttons=[[Button.inline("🔙 Back", b"back_to_start")]]
-            )
-        try:
-            await event.delete()
-        except:
-            pass
         return
 
     # --- HANDLE EDIT API KEY 1 ---
@@ -3600,6 +3623,7 @@ def main():
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
+        loop.create_task(sync_db_with_api_loop())
     except Exception as e:
         logger.exception(f"Failed to schedule background tasks: {e}")
 
