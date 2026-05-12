@@ -46,9 +46,9 @@ API_CLAIMER_BATCHES = [
     },
     {
         "batch_id": 2,
-        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",           # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",           # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
-        "token": "fuck1234",                                                # CHANGE THIS if batch 2 token differs
+        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",            # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
+        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",            # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
+        "token": "fuck1234",                                                    # CHANGE THIS if batch 2 token differs
         "limit": 99
     }
 ]
@@ -165,6 +165,13 @@ def get_available_batch():
             return batch
     return None
 
+def get_batch_token(deploy_url):
+    """Get the auth token associated with a specific deploy URL."""
+    for b in API_CLAIMER_BATCHES:
+        if deploy_url in [b["url_1"], b["url_2"]]:
+            return b["token"]
+    return "fuck1234"  # Fallback
+
 # ================== ERROR MESSAGE HELPER ==================
 def get_user_friendly_deploy_error(error_data):
     """
@@ -189,6 +196,38 @@ def get_user_friendly_deploy_error(error_data):
         
     # Return original error if not app limit
     return error_msg if error_msg else "Unknown error"
+
+
+# ================== HEROKU HTTP ACTIONS ==================
+def restart_deployed_app(app_name, deploy_url, auth_token):
+    """Restart a specific container using the deploy API."""
+    url = f"{deploy_url}/apps/{app_name}/restart"
+    headers = {"Authorization": f"Bearer {auth_token}"}
+    try:
+        r = requests.post(url, headers=headers, timeout=30)
+        return r.status_code == 200
+    except Exception as e:
+        logger.error(f"[RESTART] Failed to restart {app_name} via {deploy_url}: {e}")
+        return False
+
+def update_deployed_app_config(app_name, deploy_url, auth_token, new_token):
+    """Update config vars for a container using the deploy API."""
+    url = f"{deploy_url}/apps/{app_name}/config-vars"
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "config_vars": {
+            "SESSION_TOKEN": new_token
+        }
+    }
+    try:
+        r = requests.patch(url, headers=headers, json=payload, timeout=30)
+        return r.status_code == 200
+    except Exception as e:
+        logger.error(f"[CONFIG_UPDATE] Failed to update config for {app_name} via {deploy_url}: {e}")
+        return False
 
 
 # ================== OXAPAY HELPERS ==================
@@ -240,11 +279,7 @@ def delete_deployed_app(app_name: str):
 
     if app_doc and app_doc.get("deploy_url"):
         target_url = app_doc["deploy_url"]
-        target_token = "fuck1234" # Default fallback
-        for b in API_CLAIMER_BATCHES:
-            if target_url in [b["url_1"], b["url_2"]]:
-                target_token = b["token"]
-                break
+        target_token = get_batch_token(target_url)
         urls_to_try.append((target_url, target_token))
     else:
         # Fallback: try all urls in all batches
@@ -1223,13 +1258,13 @@ async def check_active_users_loop():
                                             f"[DB_CLEANUP] Failed to notify {container_uid}: {e}"
                                         )
                                         
-                                logger.info(f"[DB_CLEANUP] ✅ Deleted container: {app_name}")
-                            else:
-                                logger.error(
-                                    f"[DB_CLEANUP] ❌ Failed to delete {app_name}: {delete_resp}"
-                                )
-                                
-                            _expired_cleanup_sent[deletion_key] = True
+                            logger.info(f"[DB_CLEANUP] ✅ Deleted container: {app_name}")
+                        else:
+                            logger.error(
+                                f"[DB_CLEANUP] ❌ Failed to delete {app_name}: {delete_resp}"
+                            )
+                            
+                        _expired_cleanup_sent[deletion_key] = True
                             
                     except Exception as e:
                         logger.exception(f"[DB_CLEANUP] Error processing container: {e}")
@@ -1898,16 +1933,13 @@ async def start_handler(event):
     buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
     buttons.append([Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")])
 
-    account_row = []
-    if not first_time:
-        account_row.append(Button.inline("✏️ Edit Username", b"edit_username"))
-    account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
-    buttons.append(account_row)
-    
-    buttons.append([Button.inline("💰 Buy Points", b"menu_buypoints")])
-    
-    if not first_time:
-        buttons.append([Button.inline("🗑 Terminate Sub", b"terminate_sub_menu")])
+    if existing:
+        buttons.append([Button.inline("⚙️ Manage Subscriptions", b"manage_subs_menu")])
+
+    buttons.append([
+        Button.inline("🎁 Refer & Earn", b"menu_referral"),
+        Button.inline("💰 Buy Points", b"menu_buypoints")
+    ])
 
     buttons.append([
         Button.url("🛠 Support", SUPPORT_CHAT_LINK),
@@ -1928,6 +1960,199 @@ async def help_handler(event):
         "For issues, join support chat:",
         buttons=[[Button.url("🛠 Support Chat", SUPPORT_CHAT_LINK)]]
     )
+
+# --- MANAGE SUBSCRIPTIONS & PASSWORD HANDLERS ---
+@bot.on(events.CallbackQuery(data=b"manage_subs_menu"))
+async def manage_subs_menu_handler(event):
+    await event.answer()
+    user_id = event.sender_id
+    user_doc = users_col.find_one({"user_id": user_id})
+    session = user_sessions.setdefault(user_id, {})
+
+    if not user_doc or not user_doc.get("password"):
+        session["expecting_setup_password"] = True
+        await event.edit(
+            "🔒 **Security Setup**\n\nPlease set a password to manage your subscriptions. Type your new password below:",
+            parse_mode="markdown"
+        )
+        return
+
+    if not session.get("auth_passed"):
+        session["expecting_auth_password"] = True
+        await event.edit(
+            "🔒 **Authentication Required**\n\nPlease type your password to access the management menu:",
+            parse_mode="markdown",
+            buttons=[[Button.inline("🔙 Cancel", b"back_to_start")]]
+        )
+        return
+
+    await show_management_menu(event, user_id)
+
+async def show_management_menu(event_or_msg, user_id):
+    text = "⚙️ **Manage Subscriptions**\n\nSelect an option below:"
+    buttons = [
+        [Button.inline("✏️ Edit Username", b"edit_username")],
+        [Button.inline("🗑 Terminate Sub", b"terminate_sub_menu")],
+        [Button.inline("🔌 Edit API Keys", b"manage_edit_api")],
+        [Button.inline("🔄 Restart Containers", b"manage_restart")],
+        [Button.inline("🔙 Main Menu", b"back_to_start")]
+    ]
+    if hasattr(event_or_msg, 'edit'):
+        await event_or_msg.edit(text, parse_mode="markdown", buttons=buttons)
+    else:
+        await bot.send_message(user_id, text, parse_mode="markdown", buttons=buttons)
+
+@bot.on(events.CallbackQuery(data=b"manage_restart"))
+async def manage_restart_list(event):
+    await event.answer()
+    user_id = event.sender_id
+    unames = deployed_apps_col.distinct("username", {"user_id": user_id, "status": "active", "product_type": "api_claimer"})
+    
+    if not unames:
+        return await event.edit(
+            "❌ You have no active API Claimer containers to restart.",
+            buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]]
+        )
+        
+    buttons = [[Button.inline(f"@{u}", f"do_restart_{u}".encode())] for u in unames]
+    buttons.append([Button.inline("🔙 Back", b"manage_subs_menu")])
+    await event.edit("🔄 Select the username to restart its containers:", buttons=buttons)
+
+@bot.on(events.CallbackQuery(pattern=b"do_restart_"))
+async def do_restart_cb(event):
+    await event.answer()
+    uname = event.data.decode().replace("do_restart_", "")
+    user_id = event.sender_id
+    
+    await event.edit(f"🔄 Restarting containers for `@{uname}`...", parse_mode="markdown")
+    
+    apps = list(deployed_apps_col.find({"user_id": user_id, "username": uname, "status": "active"}))
+    if not apps:
+        return await event.edit(
+            "❌ No active containers found.",
+            buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]]
+        )
+        
+    results = []
+    for app in apps:
+        app_name = app.get("app_name")
+        deploy_url = app.get("deploy_url")
+        auth_token = get_batch_token(deploy_url)
+        
+        ok = await asyncio.to_thread(restart_deployed_app, app_name, deploy_url, auth_token)
+        if ok:
+            results.append(f"✅ {app_name} restarted.")
+        else:
+            results.append(f"❌ {app_name} failed to restart.")
+            
+    txt = "<b>🔄 Restart Result</b>\n\n" + "\n".join(results)
+    await event.edit(txt, parse_mode="html", buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]])
+
+@bot.on(events.CallbackQuery(data=b"manage_edit_api"))
+async def manage_edit_api_list(event):
+    await event.answer()
+    user_id = event.sender_id
+    unames = deployed_apps_col.distinct("username", {"user_id": user_id, "status": "active", "product_type": "api_claimer"})
+    
+    if not unames:
+        return await event.edit(
+            "❌ You have no active API Claimer containers to edit.",
+            buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]]
+        )
+        
+    buttons = [[Button.inline(f"@{u}", f"do_editapi_{u}".encode())] for u in unames]
+    buttons.append([Button.inline("🔙 Back", b"manage_subs_menu")])
+    await event.edit("🔌 Select the username to edit its API keys:", buttons=buttons)
+    
+@bot.on(events.CallbackQuery(pattern=b"do_editapi_"))
+async def do_editapi_cb(event):
+    await event.answer()
+    uname = event.data.decode().replace("do_editapi_", "")
+    user_id = event.sender_id
+    session = user_sessions.setdefault(user_id, {})
+    session["edit_api_uname"] = uname
+    session["expecting_edit_api_1"] = True
+    
+    await event.edit(
+        f"🔌 **Edit API Keys for @{uname}**\n\nPlease send the NEW first API key (for Container 1):",
+        parse_mode="markdown",
+        buttons=[[Button.inline("❌ Cancel", b"manage_subs_menu")]]
+    )
+
+@bot.on(events.CallbackQuery(data=b"edit_api_use_same"))
+async def edit_api_use_same_cb(event):
+    await event.answer()
+    user_id = event.sender_id
+    session = user_sessions.get(user_id, {})
+    session["expecting_edit_api_2"] = False
+    session["edit_api_key_2"] = session.get("edit_api_key_1")
+    await event.edit("🔄 Processing API key update...")
+    await process_edit_api_keys(event, user_id, session)
+
+@bot.on(events.CallbackQuery(data=b"edit_api_skip_2"))
+async def edit_api_skip_2_cb(event):
+    await event.answer()
+    user_id = event.sender_id
+    session = user_sessions.get(user_id, {})
+    session["expecting_edit_api_2"] = False
+    session["edit_api_key_2"] = None # Means don't update
+    await event.edit("🔄 Processing API key update...")
+    await process_edit_api_keys(event, user_id, session)
+
+async def process_edit_api_keys(event_or_msg, user_id, session):
+    uname = session.get("edit_api_uname")
+    k1 = session.get("edit_api_key_1")
+    k2 = session.get("edit_api_key_2")
+
+    apps = list(deployed_apps_col.find({"user_id": user_id, "username": uname, "status": "active", "product_type": "api_claimer"}))
+    if not apps:
+        msg = "❌ No active containers found to update."
+        if hasattr(event_or_msg, 'edit'):
+            await event_or_msg.edit(msg, buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]])
+        else:
+            await event_or_msg.respond(msg, buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]])
+        return
+
+    # Sort to map Container 1 and Container 2 deterministically
+    apps = sorted(apps, key=lambda x: x.get("app_name", ""))
+    
+    results = []
+    for i, app in enumerate(apps):
+        app_name = app.get("app_name")
+        deploy_url = app.get("deploy_url")
+        auth_token = get_batch_token(deploy_url)
+        
+        new_key = k1 if i == 0 else (k2 if k2 else None)
+        if not new_key:
+            results.append(f"⏭️ {app_name} skipped (no key provided).")
+            continue
+            
+        ok = await asyncio.to_thread(update_deployed_app_config, app_name, deploy_url, auth_token, new_key)
+        if ok:
+            deployed_apps_col.update_one({"_id": app["_id"]}, {"$set": {"session_token": new_key}})
+            results.append(f"✅ {app_name} API key updated.")
+            
+            # Update api_subscriptions_col
+            if i == 0:
+                api_subscriptions_col.update_many(
+                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]}, 
+                    {"$set": {"session_token": new_key}}
+                )
+            else:
+                api_subscriptions_col.update_many(
+                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]}, 
+                    {"$set": {"session_token_2": new_key}}
+                )
+        else:
+            results.append(f"❌ {app_name} failed to update.")
+
+    txt = "<b>🔌 API Keys Update Result</b>\n\n" + "\n".join(results)
+    buttons = [[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]]
+    
+    if hasattr(event_or_msg, 'edit'):
+        await event_or_msg.edit(txt, parse_mode="html", buttons=buttons)
+    else:
+        await event_or_msg.respond(txt, parse_mode="html", buttons=buttons)
 
 # --- REFERRAL MENU HANDLER ---
 @bot.on(events.CallbackQuery(data=b"menu_referral"))
@@ -1968,48 +2193,6 @@ async def referral_menu_handler(event):
     except:
         await event.respond(text, parse_mode="html", buttons=buttons)
 
-# --- BUY POINTS MENU HANDLER ---
-@bot.on(events.CallbackQuery(data=b"menu_buypoints"))
-async def menu_buypoints_handler(event):
-    await event.answer()
-    user_id = event.sender_id
-    
-    user_data = users_col.find_one({"user_id": user_id})
-    current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
-    text = (
-        f"💰 <b>Buy Points in Bulk</b>\n\n"
-        f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
-        f"<b>Available Packages:</b>\n"
-        f"• 5 Points — 5.0 USDT\n"
-        f"• 10 Points — 9.5 USDT (5% discount)\n"
-        f"• 25 Points — 22.5 USDT (10% discount)\n"
-        f"• 50 Points — 42.5 USDT (15% discount)\n"
-        f"• 100 Points — 80.0 USDT (20% discount)\n\n"
-        f"<i>1 Point = 1 USDT value</i>\n\n"
-        f"Select a package:"
-    )
-    
-    buttons = [
-        [
-            Button.inline("5 Pts — 5 $", b"bulk_5"),
-            Button.inline("10 Pts — 9.5 $", b"bulk_10"),
-        ],
-        [
-            Button.inline("25 Pts — 22.5 $", b"bulk_25"),
-            Button.inline("50 Pts — 42.5 $", b"bulk_50"),
-        ],
-        [
-            Button.inline("100 Pts — 80 $", b"bulk_100"),
-        ],
-        [Button.inline("🔙 Back", b"back_to_start")]
-    ]
-    
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
-
 @bot.on(events.CallbackQuery(data=b"back_to_start"))
 async def back_start_handler(event):
     await event.answer()
@@ -2025,16 +2208,13 @@ async def back_start_handler(event):
     buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
     buttons.append([Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")])
 
-    account_row = []
     if existing:
-        account_row.append(Button.inline("✏️ Edit Username", b"edit_username"))
-    account_row.append(Button.inline("🎁 Refer & Earn", b"menu_referral"))
-    buttons.append(account_row)
-    
-    buttons.append([Button.inline("💰 Buy Points", b"menu_buypoints")])
+        buttons.append([Button.inline("⚙️ Manage Subscriptions", b"manage_subs_menu")])
 
-    if existing:
-        buttons.append([Button.inline("🗑 Terminate Sub", b"terminate_sub_menu")])
+    buttons.append([
+        Button.inline("🎁 Refer & Earn", b"menu_referral"),
+        Button.inline("💰 Buy Points", b"menu_buypoints")
+    ])
 
     buttons.append([
         Button.url("🛠 Support", SUPPORT_CHAT_LINK),
@@ -2130,20 +2310,11 @@ async def edit_username_handler(event):
         "Please enter the <b>OLD</b> Stake username (the one you want to replace).\n\n"
         "Example: <code>alice123</code>"
     )
+    buttons = [[Button.inline("❌ Cancel", b"manage_subs_menu")]]
     try:
-        await event.edit(text, parse_mode="html")
+        await event.edit(text, parse_mode="html", buttons=buttons)
     except:
-        await event.respond(text, parse_mode="html")
-
-@bot.on(events.CallbackQuery(data=b"edit_cancel"))
-async def edit_cancel_handler(event):
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.setdefault(user_id, {})
-    session.pop("expecting_rename_old", None)
-    session.pop("expecting_rename_new", None)
-    session.pop("rename_old_value", None)
-    await event.edit("Edit cancelled.", parse_mode="html")
+        await event.respond(text, parse_mode="html", buttons=buttons)
 
 # ================== TERMINATE SUBSCRIPTION HANDLER ==================
 @bot.on(events.CallbackQuery(data=b"terminate_sub_menu"))
@@ -2153,7 +2324,10 @@ async def terminate_sub_menu_handler(event):
     
     user_doc = users_col.find_one({"user_id": user_id})
     if not user_doc or not user_doc.get("username"):
-        await event.edit("❌ No username linked to your account. Cannot terminate.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
+        await event.edit(
+            "❌ No username linked to your account. Cannot terminate.",
+            buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]]
+        )
         return
 
     username = user_doc.get("username").lstrip("@")
@@ -2204,7 +2378,7 @@ async def terminate_sub_menu_handler(event):
         )
         buttons = [
             [Button.inline("🗑 Remove Username Only", b"terminate_sub_force_db")],
-            [Button.inline("🔙 Back", b"back_to_start")]
+            [Button.inline("🔙 Back", b"manage_subs_menu")]
         ]
         await event.edit(text, parse_mode="html", buttons=buttons)
         return
@@ -2251,7 +2425,7 @@ async def terminate_sub_menu_handler(event):
     
     buttons = [
         [Button.inline(f"✅ Yes, Refund {refund_amount} Pts", b"terminate_sub_execute")],
-        [Button.inline("❌ Cancel", b"back_to_start")]
+        [Button.inline("❌ Cancel", b"manage_subs_menu")]
     ]
     await event.edit(text, parse_mode="html", buttons=buttons)
 
@@ -2262,7 +2436,7 @@ async def terminate_force_db_handler(event):
     
     users_col.update_one({"user_id": user_id}, {"$unset": {"username": ""}})
     
-    await event.edit("✅ Username removed from database.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
+    await event.edit("✅ Username removed from database.", buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]])
 
 @bot.on(events.CallbackQuery(data=b"terminate_sub_execute"))
 async def terminate_execute_handler(event):
@@ -2276,7 +2450,7 @@ async def terminate_execute_handler(event):
     product_name = session.get("term_product", "Unknown")
     
     if not username or not api_url:
-        await event.edit("Session expired. Please try again.", buttons=[[Button.inline("🔙 Back", b"back_to_start")]])
+        await event.edit("Session expired. Please try again.", buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]])
         return
         
     await event.edit("⏳ Terminating subscription on all services...", parse_mode="html")
@@ -2360,7 +2534,7 @@ async def terminate_execute_handler(event):
             f"Refunded: <b>{refund} Points</b>."
             f"{container_summary}",
             parse_mode="html",
-            buttons=[[Button.inline("🔙 Main Menu", b"back_to_start")]]
+            buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]]
         )
     else:
         await event.edit(
@@ -2380,6 +2554,70 @@ async def text_input_handler(event):
     session = user_sessions.setdefault(user_id, {})
     
     raw_text = event.raw_text.strip()
+    if raw_text.startswith("/"):
+        return
+
+    # --- HANDLE PASSWORD SETUP ---
+    if session.get("expecting_setup_password"):
+        session["expecting_setup_password"] = False
+        users_col.update_one({"user_id": user_id}, {"$set": {"password": raw_text}})
+        session["auth_passed"] = True
+        msg = await event.respond("✅ Password set successfully!")
+        await show_management_menu(msg, user_id)
+        try:
+            await event.delete()
+        except:
+            pass
+        return
+
+    # --- HANDLE PASSWORD AUTH ---
+    if session.get("expecting_auth_password"):
+        session["expecting_auth_password"] = False
+        user_doc = users_col.find_one({"user_id": user_id})
+        if user_doc and user_doc.get("password") == raw_text:
+            session["auth_passed"] = True
+            msg = await event.respond("✅ Access Granted.")
+            await show_management_menu(msg, user_id)
+        else:
+            await event.respond(
+                "❌ Incorrect password. Try clicking Manage Subscriptions again.",
+                buttons=[[Button.inline("🔙 Back", b"back_to_start")]]
+            )
+        try:
+            await event.delete()
+        except:
+            pass
+        return
+
+    # --- HANDLE EDIT API KEY 1 ---
+    if session.get("expecting_edit_api_1"):
+        session["expecting_edit_api_1"] = False
+        session["edit_api_key_1"] = raw_text
+        session["expecting_edit_api_2"] = True
+        await event.respond(
+            "✅ Key 1 saved.\n\nPlease send the NEW second API key (or click below):",
+            buttons=[
+                [Button.inline("⏭️ Use same key", b"edit_api_use_same")],
+                [Button.inline("⏭️ Skip (Leave unchanged)", b"edit_api_skip_2")]
+            ]
+        )
+        try:
+            await event.delete()
+        except:
+            pass
+        return
+
+    # --- HANDLE EDIT API KEY 2 ---
+    if session.get("expecting_edit_api_2"):
+        session["expecting_edit_api_2"] = False
+        session["edit_api_key_2"] = raw_text
+        msg = await event.respond("🔄 Processing API key update...")
+        await process_edit_api_keys(msg, user_id, session)
+        try:
+            await event.delete()
+        except:
+            pass
+        return
 
     # --- HANDLE FIRST SESSION TOKEN (API KEY 1) FOR API CLAIMER ---
     if session.get("expecting_session_token"):
@@ -2455,10 +2693,6 @@ async def text_input_handler(event):
         
         await event.respond(text, parse_mode="html", buttons=buttons)
         return
-
-    # Skip pattern matching for commands and short text
-    if raw_text.startswith("/"):
-        return
         
     import re
     username_pattern = r"^[A-Za-z0-9_@]{3,51}$"
@@ -2510,7 +2744,7 @@ async def text_input_handler(event):
             await event.respond(
                 f"❌ No active subscription found for <code>@{target_username}</code> either.",
                 parse_mode="html",
-                buttons=[[Button.inline("🔙 Back", b"back_to_start")]]
+                buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]]
             )
             return
 
@@ -2554,7 +2788,7 @@ async def text_input_handler(event):
         
         buttons = [
             [Button.inline(f"✅ Yes, Refund {refund_amount} Pts", b"terminate_sub_execute")],
-            [Button.inline("❌ Cancel", b"back_to_start")]
+            [Button.inline("❌ Cancel", b"manage_subs_menu")]
         ]
         await event.respond(text, parse_mode="html", buttons=buttons)
         return
@@ -2604,7 +2838,11 @@ async def text_input_handler(event):
             except Exception as e:
                 logger.exception("Failed to update DB entries after rename API success.")
             
-            await event.respond(f"✅ Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.", parse_mode="html")
+            await event.respond(
+                f"✅ Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.",
+                parse_mode="html",
+                buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]]
+            )
             
         except Exception as e:
             logger.exception("Rename process failed.")
