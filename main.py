@@ -18,21 +18,21 @@ UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
 UPI_DM_LINK = "https://t.me/KustXoffical"
 
 # --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"
+CLAIMER_API_URL = "https://code-auth-843da34b0699.herokuapp.com"
 # Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("kustvault", 5)
 CLAIMER_FORWARD_2 = ("kustvault", 6)
 CLAIMER_FORWARD_3 = ("kustvault", 7)
 
 # --- Chat Farmer Assets ---
-FARMER_API_URL = "https://farmer-auth-23d20abb870c.herokuapp.com"
+FARMER_API_URL = "https://chat-auth-9dd620df2bf0.herokuapp.com"
 # Forwards for Farmer (Using same vault for now, change if needed)
 FARMER_FORWARD_1 = ("kustvault", 2)
 FARMER_FORWARD_2 = ("kustvault", 3)
 FARMER_FORWARD_3 = ("kustvault", 4)
 
 # --- API Claimer Assets ---
-API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
+API_CLAIMER_AUTH_URL = "https://code-auth-843da34b0699.herokuapp.com"  # Same as Code Claimer auth
 
 # DUAL DEPLOY URLS (Batches for Load Distribution)
 # Per batch limit is 98. Once Batch 1 reaches 98 active containers, it routes to Batch 2.
@@ -42,14 +42,14 @@ API_CLAIMER_BATCHES = [
         "url_1": "https://api-claimer-1-a0328d2f6f1d.herokuapp.com",   # Deploy 1 (stake.bet)
         "url_2": "https://api-claimer-2-db2d49c4887d.herokuapp.com",   # Deploy 2 (stake.pet)
         "token": "fuck1234",
-        "limit": 60
+        "limit": 30
     },
     {
         "batch_id": 2,
         "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",            # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
         "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",            # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
         "token": "fuck1234",                                                    # CHANGE THIS if batch 2 token differs
-        "limit": 99
+        "limit": 0
     }
 ]
 
