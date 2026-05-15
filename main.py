@@ -83,24 +83,24 @@ REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 
 # Plans (Shared pricing for 2d+)
 PLANS_LONG_TERM = {
-    "2d":  {"label": "2 Days",      "amount": 4.5,  "hours": 48},
+    "2d":  {"label": "2 Days",      "amount": 5.0,  "hours": 48},
     "4d":  {"label": "4 Days",      "amount": 8.0,  "hours": 96},
-    "7d":  {"label": "7 Days",      "amount": 12.5, "hours": 168},
+    "7d":  {"label": "7 Days",      "amount": 12.0, "hours": 168},
 }
 
 # 1 Day definitions (Product dependent)
 # Code Claimer "1 Day" is now 12 Hours
-PLAN_1D_CLAIMER = {"label": "12 Hours", "amount": 2.5, "hours": 12}
+PLAN_1D_CLAIMER = {"label": "24 Hours", "amount": 5.0, "hours": 24}
 # API Claimer "1 Day" is 24 Hours
-PLAN_1D_API_CLAIMER = {"label": "1 Day", "amount": 3.0, "hours": 24}
+PLAN_1D_API_CLAIMER = {"label": "2 Day", "amount": 5.0, "hours": 48}
 
 # Plans (Exclusive to API Claimer)
 PLANS_API_CLAIMER = {
-    "1d":  {"label": "1 Day",    "amount": 4.0,  "hours": 12},
+    "1d":  {"label": "2 Day",    "amount": 5.0,  "hours": 48},
     "3d":  {"label": "3 Days",   "amount": 7.5,  "hours": 72},
-    "7d":  {"label": "7 Days",   "amount": 8.0, "hours": 168},
-    "14d": {"label": "14 Days",  "amount": 18.0, "hours": 336},
-    "30d": {"label": "30 Days",  "amount": 25.0, "hours": 720},
+    "7d":  {"label": "7 Days",   "amount": 12.0, "hours": 168},
+    "14d": {"label": "14 Days",  "amount": 21.0, "hours": 336},
+    "30d": {"label": "30 Days",  "amount": 30.0, "hours": 720},
 }
 
 # --- BULK POINTS PACKAGES ---
@@ -115,8 +115,8 @@ BULK_POINTS_PACKAGES = {
 # --- REFUND CONFIGURATION ---
 # Refund amounts per hour remaining.
 # Set conservatively to prevent "Plan Arbitrage" (buying cheap long plans and refunding at expensive short rates).
-REFUND_RATE_CLAIMER_PER_HOUR = 0.15 # Approx $0.15 per hour
-REFUND_RATE_API_CLAIMER_PER_HOUR = 0.10  # Approx $0.10 per hour
+REFUND_RATE_CLAIMER_PER_HOUR = 0.0 # Approx $0.15 per hour
+REFUND_RATE_API_CLAIMER_PER_HOUR = 0.0  # Approx $0.10 per hour
 
 PAYMENT_TIMEOUT = 15 * 60
 POLL_INTERVAL = 10
