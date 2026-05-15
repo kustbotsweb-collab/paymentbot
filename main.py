@@ -46,9 +46,9 @@ API_CLAIMER_BATCHES = [
     },
     {
         "batch_id": 2,
-        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",            # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",            # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
-        "token": "fuck1234",                                                    # CHANGE THIS if batch 2 token differs
+        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",             # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
+        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",             # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
+        "token": "fuck1234",                                                     # CHANGE THIS if batch 2 token differs
         "limit": 0
     }
 ]
@@ -1478,14 +1478,14 @@ async def apicstats_handler(event):
                         status_emoji = "🔴"
                     
                     expires_str = expires_dt.strftime('%Y-%m-%d %H:%M UTC')
-                else:
-                    time_str = "N/A"
-                    expires_str = "Invalid date"
-                    status_emoji = "⚪"
             else:
                 time_str = "N/A"
-                expires_str = "No expiry"
+                expires_str = "Invalid date"
                 status_emoji = "⚪"
+        else:
+            time_str = "N/A"
+            expires_str = "No expiry"
+            status_emoji = "⚪"
             
             clean_username = username.lstrip("@") if username else ""
             
@@ -1811,6 +1811,7 @@ async def bulk_points_handler(event):
     except:
         await event.respond(text, parse_mode="html", buttons=buttons)
 
+@bot.on(events.CallbackQuery(data=b"menu_buypoints"))
 @bot.on(events.CallbackQuery(data=b"back_buypoints"))
 async def back_buypoints_handler(event):
     await event.answer()
