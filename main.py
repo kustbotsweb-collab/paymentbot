@@ -42,7 +42,7 @@ API_CLAIMER_BATCHES = [
         "url_1": "https://api-claimer-1-a0328d2f6f1d.herokuapp.com",   # Deploy 1 (stake.bet)
         "url_2": "https://api-claimer-2-db2d49c4887d.herokuapp.com",   # Deploy 2 (stake.pet)
         "token": "fuck1234",
-        "limit": 60
+        "limit": 30
     },
     {
         "batch_id": 2,
