@@ -62,7 +62,7 @@ mongo = MongoClient(MONGO_URL)
 db = mongo["kustfarm"]
 users_col = db["users"]
 
-# Track deployed app names to avoid conflicts
+# Track deployed apps to avoid conflicts
 deployed_apps_col = db["deployed_apps"]
 
 # Track API subscriptions for better management
@@ -2745,7 +2745,7 @@ async def confirm_yes_handler(event):
         "Choose payment method:"
     )
     
-    pay_btn_text = "💳 Pay with Crypto / Points" if prod == "api_claimer" else "💳 Pay with Crypto"
+    pay_btn_text = "💳 Pay with Crypto / Points"
     
     buttons = [
         [Button.inline(pay_btn_text, b"buy_crypto")],
@@ -2767,7 +2767,7 @@ async def buy_upi_handler(event):
     text = (
         "<tg-emoji emoji-id='6325705628291436771'>💵</tg-emoji> <b>Pay with UPI</b>\n\n"
         "DM admin and mention your Stake username:\n"
-        f"👉 <a href=\"{UPI_DM_LINK}\">Rabbit</a>"
+        f"👉 <a href=\"{UPI_DM_LINK}\">@Rabit0505</a>"
     )
     buttons = [[Button.url("💬 DM for UPI Payment", UPI_DM_LINK)]]
     try:
@@ -2933,8 +2933,8 @@ async def plan_handler(event):
     else:
         prod_name = "Code Rebate Claimer"
 
-    points_text = f"💰 Your Points: <b>{user_points:.2f}</b>\n\n" if prod == "api_claimer" else ""
-    cost_text = f"Cost: <b>{amount} USDT</b> (or Points)\n" if prod == "api_claimer" else f"Cost: <b>{amount} USDT</b>\n"
+    points_text = f"💰 Your Points: <b>{user_points:.2f}</b>\n\n"
+    cost_text = f"Cost: <b>{amount} USDT</b> (or Points)\n"
 
     text = (
         f"🛒 <b>Checkout: {prod_name}</b>\n\n"
@@ -2949,8 +2949,7 @@ async def plan_handler(event):
         [Button.inline(f"💳 Pay Crypto — ${amount}", b"pay_method_crypto")],
     ]
     
-    if prod == "api_claimer":
-        buttons.append([Button.inline(f"💰 Pay Points — {amount} Pts", b"pay_method_points")])
+    buttons.append([Button.inline(f"💰 Pay Points — {amount} Pts", b"pay_method_points")])
 
     buttons.append([Button.inline("🔙 Back to Plans", b"buy_crypto")])
     
@@ -2969,17 +2968,18 @@ async def pay_points_handler(event):
         return await event.respond("Session expired. Please restart.")
         
     prod = session.get("product", "claimer")
-    if prod != "api_claimer":
-        return await event.answer("❌ Points payment is only available for API Rebate Claimer.", alert=True)
         
     amount = session["selected_amount"]
     label = session["selected_label"]
     hours = session["selected_hours"]
     username_clean = session["username"]
     
-    api_url = API_CLAIMER_AUTH_URL
-    prod_name = "API Rebate Claimer"
-    forwards = []
+    if prod == "api_claimer":
+        api_url = API_CLAIMER_AUTH_URL
+        prod_name = "API Rebate Claimer"
+    else:
+        api_url = CLAIMER_API_URL
+        prod_name = "Code Rebate Claimer"
     
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
@@ -3000,80 +3000,112 @@ async def pay_points_handler(event):
         except:
             pass
         
-        # === API CLAIMER: DUAL DEPLOY CONTAINERS ===
-        session_token_1 = session.get("session_token")
-        session_token_2 = session.get("session_token_2")
-        if session_token_1 and session_token_2:
-            now_dt = datetime.now(timezone.utc)
-            expires_at = now_dt + timedelta(hours=hours)
+        if prod == "api_claimer":
+            # === API CLAIMER: DUAL DEPLOY CONTAINERS ===
+            session_token_1 = session.get("session_token")
+            session_token_2 = session.get("session_token_2")
+            if session_token_1 and session_token_2:
+                now_dt = datetime.now(timezone.utc)
+                expires_at = now_dt + timedelta(hours=hours)
 
-            deploy_result = await animate_dual_deploy_progress(
-                user_id, username_clean, session_token_1, session_token_2
-            )
+                deploy_result = await animate_dual_deploy_progress(
+                    user_id, username_clean, session_token_1, session_token_2
+                )
 
-            if len(deploy_result) == 9:
-                app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
-            else:
-                app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
-                dep_url_1, dep_url_2, auth_tok = "", "", ""
+                if len(deploy_result) == 9:
+                    app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
+                else:
+                    app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
+                    dep_url_1, dep_url_2, auth_tok = "", "", ""
 
-            # Save both containers to DB
-            for (app_name, ok, res, mirror, deploy_url, tok) in [
-                (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
-                (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
-            ]:
-                web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
-                deployed_apps_col.insert_one({
-                    "user_id": user_id,
-                    "username": username_clean,
-                    "app_name": app_name,
-                    "session_token": tok,
-                    "mirror_site": mirror,
-                    "deploy_url": deploy_url,
-                    "deployed_at": now_dt,
-                    "expires_at": expires_at,
-                    "status": "active" if ok else "deploy_failed",
-                    "web_url": web_url,
-                    "region": API_CLAIMER_REGION,
-                    "product_type": "api_claimer"
-                })
-
-            api_subscriptions_col.update_one(
-                {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
-                {
-                    "$set": {
+                # Save both containers to DB
+                for (app_name, ok, res, mirror, deploy_url, tok) in [
+                    (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
+                    (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
+                ]:
+                    web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
+                    deployed_apps_col.insert_one({
                         "user_id": user_id,
                         "username": username_clean,
-                        "product_type": "api_claimer",
-                        "app_name_1": app_name_1,
-                        "app_name_2": app_name_2,
-                        "api_url": api_url,
+                        "app_name": app_name,
+                        "session_token": tok,
+                        "mirror_site": mirror,
+                        "deploy_url": deploy_url,
+                        "deployed_at": now_dt,
                         "expires_at": expires_at,
-                        "status": "active",
-                        "session_token": session_token_1,
-                        "session_token_2": session_token_2,
-                        "updated_at": now_dt
-                    }
-                },
-                upsert=True
-            )
-        elif session_token_1:
-            await bot.send_message(
-                user_id,
-                "⚠️ <b>Second API key missing.</b>\nOnly one container can be deployed. Contact support.",
-                parse_mode="html",
-                buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
-            )
+                        "status": "active" if ok else "deploy_failed",
+                        "web_url": web_url,
+                        "region": API_CLAIMER_REGION,
+                        "product_type": "api_claimer"
+                    })
+
+                api_subscriptions_col.update_one(
+                    {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
+                    {
+                        "$set": {
+                            "user_id": user_id,
+                            "username": username_clean,
+                            "product_type": "api_claimer",
+                            "app_name_1": app_name_1,
+                            "app_name_2": app_name_2,
+                            "api_url": api_url,
+                            "expires_at": expires_at,
+                            "status": "active",
+                            "session_token": session_token_1,
+                            "session_token_2": session_token_2,
+                            "updated_at": now_dt
+                        }
+                    },
+                    upsert=True
+                )
+            elif session_token_1:
+                await bot.send_message(
+                    user_id,
+                    "⚠️ <b>Second API key missing.</b>\nOnly one container can be deployed. Contact support.",
+                    parse_mode="html",
+                    buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
+                )
+            else:
+                await bot.send_message(
+                    user_id,
+                    "⚠️ <b>No API keys provided.</b>\nContact support to deploy your containers manually.",
+                    parse_mode="html",
+                    buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
+                )
         else:
+            # === CODE CLAIMER ===
             await bot.send_message(
                 user_id,
-                "⚠️ <b>No API keys provided.</b>\nContact support to deploy your containers manually.",
-                parse_mode="html",
-                buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
+                f"✅ Payment confirmed via Points!\n\n"
+                f"Your <b>{prod_name} — {label}</b> subscription is activated.\n"
+                f"Stake Username: <code>@{username_clean}</code>\n"
+                f"Duration: <b>{hours} hours</b>.",
+                parse_mode="html"
             )
+            
+            forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2]
+            for chat, msg_id in forwards:
+                try:
+                    try:
+                        source_entity = await bot.get_entity(chat)
+                    except Exception as e:
+                        source_entity = chat 
+
+                    fwd = await bot.forward_messages(entity=user_id, messages=msg_id, from_peer=source_entity)
+                    if isinstance(fwd, list):
+                        fwd = fwd[0]
+                    try:
+                        await bot.pin_message(user_id, fwd.id, notify=True)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.exception(f"Forward error for {chat} msg {msg_id}: {e}")
     else:
         users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
-        await event.edit("❌ Activation failed. Points refunded. Contact support.", parse_mode="html")
+        try:
+            await event.respond("❌ Activation failed. Points refunded. Contact support.", parse_mode="html")
+        except:
+            pass
 
 @bot.on(events.CallbackQuery(data=b"pay_method_crypto"))
 async def pay_crypto_inv_handler(event):
