@@ -2313,11 +2313,12 @@ async def buy_product_handler(event):
     
     data_str = event.data.decode()
 
-    # --- MAINTENANCE MODE FOR CODE CLAIMER ---
-    if data_str == "buy_product_claimer":
+    # --- MAINTENANCE MODE FOR CODE CLAIMER & API CLAIMER ---
+    if data_str in ["buy_product_claimer", "buy_product_api_claimer"]:
+        prod_name = "Code Claimer" if data_str == "buy_product_claimer" else "API Claimer"
         dev_note = (
             "🚧 <b>Maintenance Mode</b> 🚧\n\n"
-            "Code Claimer is currently unavailable.\n\n"
+            f"{prod_name} is currently unavailable.\n\n"
             "<b>Developer Note:</b> <i>I am currently in a fucking hospital and can't run the claimer right now. Please check back later or choose another product.</i>"
         )
         buttons = [[Button.inline("🔙 Main Menu", b"back_to_start")]]
