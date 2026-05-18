@@ -2237,7 +2237,7 @@ async def referral_menu_handler(event):
         "1 Point = 1 USDT value.\n\n"
         f"<tg-emoji emoji-id='5375312095346704820'>💰</tg-emoji> <b>Your Balance:</b> {points:.2f} Points\n"
         f"<tg-emoji emoji-id='5453957997418004470'>👥</tg-emoji> <b>Total Referrals:</b> {ref_count}\n\n"
-        "<tg-emoji emoji-id='5442744585132464157'>👇</tg-emoji> <b>Your Referral Link:</b>\n"
+        "<b><tg-emoji emoji-id='5442744585132464157'>👇</tg-emoji> Your Referral Link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         "Share this link. You get notified instantly when someone joins."
     )
@@ -2312,6 +2312,22 @@ async def buy_product_handler(event):
     user_id = event.sender_id
     
     data_str = event.data.decode()
+
+    # --- MAINTENANCE MODE FOR CODE CLAIMER ---
+    if data_str == "buy_product_claimer":
+        dev_note = (
+            "🚧 <b>Maintenance Mode</b> 🚧\n\n"
+            "Code Claimer is currently unavailable.\n\n"
+            "<b>Developer Note:</b> <i>I am currently in a fucking hospital and can't run the claimer right now. Please check back later or choose another product.</i>"
+        )
+        buttons = [[Button.inline("🔙 Main Menu", b"back_to_start")]]
+        try:
+            await event.edit(dev_note, parse_mode="html", buttons=buttons)
+        except:
+            await event.respond(dev_note, parse_mode="html", buttons=buttons)
+        return
+    # -----------------------------------------
+
     product_type = "claimer"
     product_display = "Code Claimer"
     
