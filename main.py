@@ -20,13 +20,13 @@ UPDATES_CHANNEL_LINK = "https://t.me/Rabit0505"
 UPI_DM_LINK = "https://t.me/Rabit0505"
 
 # --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"
+CLAIMER_API_URL = "https://code-auth-843da34b0699.herokuapp.com"
 # Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("rebateautomations", 2)  # 1st: the claimer file
 CLAIMER_FORWARD_2 = ("rebateautomations", 3)  # 2nd: setup video
 
 # --- API Claimer Assets ---
-API_CLAIMER_AUTH_URL = "https://code-auth-st-21daa6a894ca.herokuapp.com"  # Same as Code Claimer auth
+API_CLAIMER_AUTH_URL = "https://code-auth-843da34b0699.herokuapp.com"  # Same as Code Claimer auth
 
 # DUAL DEPLOY URLS (Batches for Load Distribution)
 # Per batch limit is 99. Once Batch 1 reaches 99 active containers, it routes to Batch 2.
