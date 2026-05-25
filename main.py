@@ -70,7 +70,7 @@ START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c1
 # MongoDB
 MONGO_URL = "mongodb+srv://kustbotsweb_db_user:z7YqNFmFOvVHKl4B@kust-payments.hiin3lu.mongodb.net/?appName=kust-payments"
 mongo = MongoClient(MONGO_URL)
-db = mongo["kustfarm"]
+db = mongo["kustchatbot"]
 users_col = db["users"]
 # Track deployed apps
 deployed_apps_col = db["deployed_apps"]
