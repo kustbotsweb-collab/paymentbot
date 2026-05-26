@@ -81,26 +81,12 @@ REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 
 # --- PRICING PLANS ---
 
-# Plans (Shared pricing for 2d+)
-PLANS_LONG_TERM = {
-    "2d":  {"label": "2 Days",      "amount": 5.0,  "hours": 48},
-    "4d":  {"label": "4 Days",      "amount": 8.0,  "hours": 96},
-    "7d":  {"label": "7 Days",      "amount": 12.0, "hours": 168},
-}
-
-# 1 Day definitions (Product dependent)
-# Code Claimer "1 Day" is now 12 Hours
-PLAN_1D_CLAIMER = {"label": "24 Hours", "amount": 5.0, "hours": 24}
-# API Claimer "1 Day" is 24 Hours
-PLAN_1D_API_CLAIMER = {"label": "2 Day", "amount": 5.0, "hours": 48}
-
-# Plans (Exclusive to API Claimer)
-PLANS_API_CLAIMER = {
-    "1d":  {"label": "2 Day",    "amount": 5.0,  "hours": 48},
-    "3d":  {"label": "3 Days",   "amount": 7.5,  "hours": 72},
-    "7d":  {"label": "7 Days",   "amount": 12.0, "hours": 168},
-    "14d": {"label": "14 Days",  "amount": 21.0, "hours": 336},
-    "30d": {"label": "30 Days",  "amount": 30.0, "hours": 720},
+# Plans (Shared pricing for both Code Claimer and API Claimer)
+PLANS = {
+    "2d":   {"label": "2 Days Weekend",           "amount": 6.0,   "hours": 48},
+    "7d":   {"label": "1 Week",                   "amount": 15.0,  "hours": 168},
+    "30d":  {"label": "1 Month",                  "amount": 50.0,  "hours": 720},
+    "120d": {"label": "3 Months (+1 Month Free)", "amount": 140.0, "hours": 2880},
 }
 
 # --- BULK POINTS PACKAGES ---
@@ -1162,13 +1148,13 @@ async def check_active_users_loop():
                                             f"[DB_CLEANUP] Failed to notify {container_uid}: {e}"
                                         )
 
-                                logger.info(f"[DB_CLEANUP] ✅ Deleted container: {app_name}")
-                            else:
-                                logger.error(
-                                    f"[DB_CLEANUP] ❌ Failed to delete {app_name}: {delete_resp}"
-                                )
+                            logger.info(f"[DB_CLEANUP] ✅ Deleted container: {app_name}")
+                        else:
+                            logger.error(
+                                f"[DB_CLEANUP] ❌ Failed to delete {app_name}: {delete_resp}"
+                            )
 
-                            _expired_cleanup_sent[deletion_key] = True
+                        _expired_cleanup_sent[deletion_key] = True
 
                     except Exception as e:
                         logger.exception(f"[DB_CLEANUP] Error processing container: {e}")
@@ -2792,9 +2778,6 @@ async def buy_crypto_handler(event):
 
     header = f"⚡ <b>{prod_name} Plans</b>"
     
-    now = datetime.now(timezone.utc)
-    is_weekend = now.weekday() in [5, 6]
-
     text = (
         f"{header}\n"
         "💳 <b>Select a Plan</b>\n\n"
@@ -2803,56 +2786,26 @@ async def buy_crypto_handler(event):
     
     buttons = []
     
-    if prod == "api_claimer":
-        p1d = PLANS_API_CLAIMER["1d"]
-        p3d = PLANS_API_CLAIMER["3d"]
-        p7d = PLANS_API_CLAIMER["7d"]
-        p14d = PLANS_API_CLAIMER["14d"]
-        p30d = PLANS_API_CLAIMER["30d"]
+    p2d = PLANS["2d"]
+    p7d = PLANS["7d"]
+    p30d = PLANS["30d"]
+    p120d = PLANS["120d"]
 
-        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        text += f"• {p3d['label']:<8} — {p3d['amount']} USDT\n"
-        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
-        text += f"• {p14d['label']:<8} — {p14d['amount']} USDT\n"
-        text += f"• {p30d['label']:<8} — {p30d['amount']} USDT\n"
+    text += f"• {p2d['label']:<20} — {p2d['amount']} USDT\n"
+    text += f"• {p7d['label']:<20} — {p7d['amount']} USDT\n"
+    text += f"• {p30d['label']:<20} — {p30d['amount']} USDT\n"
+    text += f"• {p120d['label']:<20} — {p120d['amount']} USDT\n"
 
-        buttons.append([
-            Button.inline(f"1 Day — ${p1d['amount']}", b"plan_api_1d"),
-            Button.inline(f"3 Days — ${p3d['amount']}", b"plan_api_3d"),
-        ])
-        buttons.append([
-            Button.inline(f"7 Days — ${p7d['amount']}", b"plan_api_7d"),
-            Button.inline(f"14 Days — ${p14d['amount']}", b"plan_api_14d"),
-        ])
-        buttons.append([
-            Button.inline(f"30 Days — ${p30d['amount']}", b"plan_api_30d"),
-        ])
-        
-    else:
-        p1d = PLAN_1D_CLAIMER
-        p2d = PLANS_LONG_TERM["2d"]
-        p4d = PLANS_LONG_TERM["4d"]
-        p7d = PLANS_LONG_TERM["7d"]
-        
-        p2d_label_display = "2 Days (48h)"
-
-        if is_weekend:
-            text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
-            buttons.append([Button.inline("🎉 Weekend Pass — $5", b"plan_weekend")])
-
-        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        text += f"• {p2d_label_display:<8} — {p2d['amount']} USDT\n"
-        text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
-        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
-
-        buttons.append([
-            Button.inline(f"{p1d['label']} — ${p1d['amount']}", b"plan_1d"),
-            Button.inline(f"2 Days — ${p2d['amount']}", b"plan_2d"),
-        ])
-        buttons.append([
-            Button.inline(f"4 Days — ${p4d['amount']}", b"plan_4d"),
-            Button.inline(f"7 Days — ${p7d['amount']}", b"plan_7d"),
-        ])
+    buttons.append([
+        Button.inline(f"{p2d['label']} — ${p2d['amount']}", b"plan_2d"),
+        Button.inline(f"{p7d['label']} — ${p7d['amount']}", b"plan_7d"),
+    ])
+    buttons.append([
+        Button.inline(f"{p30d['label']} — ${p30d['amount']}", b"plan_30d"),
+    ])
+    buttons.append([
+        Button.inline(f"{p120d['label']} — ${p120d['amount']}", b"plan_120d"),
+    ])
 
     text += "\nSelect your plan:"
 
@@ -2875,50 +2828,16 @@ async def plan_handler(event):
     prod = session.get("product", "claimer")
 
     if plan_key_raw.startswith("api_"):
-        plan_key = plan_key_raw.replace("api_", "")
-        plan = PLANS_API_CLAIMER.get(plan_key)
-        if not plan:
-            return await event.respond("Invalid plan. Try again.")
-        amount = plan["amount"]
-        label = plan["label"]
-        hours = plan["hours"]
+        plan_key_raw = plan_key_raw.replace("api_", "")
+
+    plan = PLANS.get(plan_key_raw)
+    if not plan:
+        return await event.respond("Invalid plan. Try again.")
         
-    elif plan_key_raw == "weekend":
-        now = datetime.now(timezone.utc)
-        weekday = now.weekday()
-        days_until_monday = 7 - weekday
-        next_monday = (now + timedelta(days=days_until_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        remaining = next_monday - now
-        hours = int(remaining.total_seconds() / 3600)
-        
-        if hours < 1: 
-            hours = 1
-            
-        amount = 5.0
-        label = "Weekend Pass"
-        plan_key = "weekend"
-        
-    elif plan_key_raw == "1d":
-        if prod == "api_claimer":
-            plan = PLANS_API_CLAIMER["1d"]
-        else:
-            plan = PLAN_1D_CLAIMER
-        amount = plan["amount"]
-        label = plan["label"]
-        hours = plan["hours"]
-        plan_key = "1d"
-        
-    else:
-        plan = PLANS_LONG_TERM.get(plan_key_raw)
-        if not plan:
-            return await event.respond("Invalid plan. Try again.")
-        amount = plan["amount"]
-        label = plan["label"]
-        if prod == "claimer" and plan_key_raw == "2d":
-            label = "2 Days (48h)"
-        hours = plan["hours"]
-        plan_key = plan_key_raw
+    amount = plan["amount"]
+    label = plan["label"]
+    hours = plan["hours"]
+    plan_key = plan_key_raw
 
     session["selected_plan_key"] = plan_key
     session["selected_amount"] = amount
