@@ -28,30 +28,39 @@ CLAIMER_FORWARD_2 = ("rebateautomations", 3)  # 2nd: setup video
 # --- API Claimer Assets ---
 API_CLAIMER_AUTH_URL = "https://code-auth1-4df5f5b73886.herokuapp.com"  # Same as Code Claimer auth
 
-# DUAL DEPLOY URLS (Batches for Load Distribution)
-# Per batch limit is 99. Once Batch 1 reaches 99 active containers, it routes to Batch 2.
-API_CLAIMER_BATCHES = [
+# DEPLOY URLS (Load Distribution Pool)
+# The bot will deploy a single container using the first deployer that hasn't reached its limit.
+API_CLAIMER_DEPLOYERS = [
     {
-        "batch_id": 1,
-        "url_1": "https://api-claimer-deploy-3-fa01873d3aed.herokuapp.com",   # Deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-deploy-4-bc437f1aef0b.herokuapp.com",   # Deploy 2 (stake.pet)
+        "deploy_id": 1,
+        "url": "https://api-claimer-deploy-3-fa01873d3aed.herokuapp.com",
         "token": "fuck1234",
-        "limit": 95
+        "limit": 99
     },
     {
-        "batch_id": 2,
-        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",   # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",   # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
-        "token": "fuck1234",                                           # CHANGE THIS if batch 2 token differs
-        "limit": 0
+        "deploy_id": 2,
+        "url": "https://api-claimer-deploy-4-bc437f1aef0b.herokuapp.com",
+        "token": "fuck1234",
+        "limit": 99
+    },
+    {
+        "deploy_id": 3,
+        "url": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",
+        "token": "fuck1234",
+        "limit": 99
+    },
+    {
+        "deploy_id": 4,
+        "url": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",
+        "token": "fuck1234",
+        "limit": 99
     }
 ]
 
 API_CLAIMER_REGION = "eu"  # Deploy region
 
-# Mirror sites for dual deployment
-API_CLAIMER_MIRROR_SITE_1 = "stake.bet"
-API_CLAIMER_MIRROR_SITE_2 = "stake.pet"
+# Mirror site
+API_CLAIMER_MIRROR_SITE = "stake.bet"
 
 # Start image
 START_IMAGE_URL = "https://rebatestarting.vibeshiftbots.workers.dev/"
@@ -99,8 +108,6 @@ BULK_POINTS_PACKAGES = {
 }
 
 # --- REFUND CONFIGURATION ---
-# Refund amounts per hour remaining.
-# Set conservatively to prevent "Plan Arbitrage" (buying cheap long plans and refunding at expensive short rates).
 REFUND_RATE_CLAIMER_PER_HOUR = 0.0 # Approx $0.15 per hour
 REFUND_RATE_API_CLAIMER_PER_HOUR = 0.0  # Approx $0.10 per hour
 
@@ -127,15 +134,15 @@ _pre_expiry_deletion_sent = {}
 
 # ================== BATCH MANAGEMENT ==================
 
-def get_available_batch():
-    """Find the first batch that hasn't reached its deployment limit."""
-    for batch in API_CLAIMER_BATCHES:
+def get_available_deployer():
+    """Find the first deployer that hasn't reached its deployment limit."""
+    for deployer in API_CLAIMER_DEPLOYERS:
         count = deployed_apps_col.count_documents({
-            "deploy_url": batch["url_1"],
+            "deploy_url": deployer["url"],
             "status": "active"
         })
-        if count < batch["limit"]:
-            return batch
+        if count < deployer["limit"]:
+            return deployer
     return None
 
 # ================== ERROR MESSAGE HELPER ==================
@@ -204,7 +211,7 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
 def delete_deployed_app(app_name: str):
     """
     Delete a deployed Heroku app/container via the deploy API.
-    Checks the DB to find the exact deploy_url, otherwise tries all known batches.
+    Checks the DB to find the exact deploy_url, otherwise tries all known deployers.
     """
     success_any = False
     last_resp = {}
@@ -215,16 +222,15 @@ def delete_deployed_app(app_name: str):
     if app_doc and app_doc.get("deploy_url"):
         target_url = app_doc["deploy_url"]
         target_token = "fuck1234"  # Default fallback
-        for b in API_CLAIMER_BATCHES:
-            if target_url in [b["url_1"], b["url_2"]]:
-                target_token = b["token"]
+        for d in API_CLAIMER_DEPLOYERS:
+            if target_url == d["url"]:
+                target_token = d["token"]
                 break
         urls_to_try.append((target_url, target_token))
     else:
-        # Fallback: try all urls in all batches
-        for b in API_CLAIMER_BATCHES:
-            urls_to_try.append((b["url_1"], b["token"]))
-            urls_to_try.append((b["url_2"], b["token"]))
+        # Fallback: try all urls in all deployers
+        for d in API_CLAIMER_DEPLOYERS:
+            urls_to_try.append((d["url"], d["token"]))
 
     for deploy_url, auth_token in urls_to_try:
         try:
@@ -262,9 +268,8 @@ def delete_deployed_app(app_name: str):
 def generate_unique_app_name(username: str, suffix_tag: str = ""):
     """
     Generate a unique app name based on username.
-    Format: api-cl-{username} or api-cl-{username}-2 for the second deployment.
+    Format: api-cl-{username}
     If taken, append random alphanumeric character.
-    suffix_tag: optional suffix like "-2" to differentiate dual deployments.
     """
     # Clean username - remove @ and special characters
     clean_user = username.lstrip("@").lower()
@@ -411,125 +416,98 @@ def extract_status_from_query_response(resp_json):
                     return str(s).lower()
     return None
 
-# ================== DUAL DEPLOY PROGRESS ANIMATION ==================
+# ================== SINGLE DEPLOY PROGRESS ANIMATION ==================
 
-async def animate_dual_deploy_progress(user_id: int, username_clean: str,
-                                       session_token_1: str, session_token_2: str):
+async def animate_deploy_progress(user_id: int, username_clean: str, session_token: str):
     """
-    Deploy TWO containers concurrently using an available batch.
-    Returns (app_name_1, ok1, res1, app_name_2, ok2, res2, deploy_url_1, deploy_url_2, auth_token).
+    Deploy A SINGLE container using an available load-balanced deployer.
+    Returns (app_name, ok, res, deploy_url, auth_token).
     """
-    batch = get_available_batch()
-    if not batch:
-        msg = "❌ All deployment slots are currently full across all batches (Limit: 99 per batch). Please contact support to arrange availability."
+    deployer = get_available_deployer()
+    if not deployer:
+        msg = "❌ All deployment slots are currently full across all deployers. Please contact support to arrange availability."
         await bot.send_message(user_id, msg)
-        return ("app_1", False, {"error": "All batches full"}, "app_2", False, {"error": "All batches full"}, "", "", "")
+        return ("app_1", False, {"error": "All deployers full"}, "", "")
 
-    deploy_url_1 = batch["url_1"]
-    deploy_url_2 = batch["url_2"]
-    auth_token = batch["token"]
+    deploy_url = deployer["url"]
+    auth_token = deployer["token"]
 
-    app_name_1 = generate_unique_app_name(username_clean, "")
-    app_name_2 = generate_unique_app_name(username_clean, "-2")
+    app_name = generate_unique_app_name(username_clean)
 
     progress_state = {
-        1: {"message": "Starting...", "progress": 0, "done": False, "success": False, "result": {}},
-        2: {"message": "Starting...", "progress": 0, "done": False, "success": False, "result": {}},
+        "message": "Starting...", "progress": 0, "done": False, "success": False, "result": {}
     }
 
     # Send initial progress message
     def render_text():
-        s1 = progress_state[1]
-        s2 = progress_state[2]
-        icon1 = "✅" if (s1["done"] and s1["success"]) else ("❌" if (s1["done"] and not s1["success"]) else "🔄")
-        icon2 = "✅" if (s2["done"] and s2["success"]) else ("❌" if (s2["done"] and not s2["success"]) else "🔄")
+        s = progress_state
+        icon = "✅" if (s["done"] and s["success"]) else ("❌" if (s["done"] and not s["success"]) else "🔄")
         return (
-            f"🚀 <b>Deploying your API Rebate Claimer (Dual Mode)...</b>\n\n"
-            f"{icon1} <b>Container 1</b> — <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}]\n"
-            f"   Progress: <b>{s1['progress']}%</b> | {s1['message']}\n\n"
-            f"{icon2} <b>Container 2</b> — <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}]\n"
-            f"   Progress: <b>{s2['progress']}%</b> | {s2['message']}\n\n"
-            f"Region: <b>{API_CLAIMER_REGION.upper()}</b> | Batch: <b>#{batch['batch_id']}</b>"
+            f"🚀 <b>Deploying your API Rebate Claimer...</b>\n\n"
+            f"{icon} <b>Container</b> — <code>{app_name}</code> [{API_CLAIMER_MIRROR_SITE}]\n"
+            f"   Progress: <b>{s['progress']}%</b> | {s['message']}\n\n"
+            f"Region: <b>{API_CLAIMER_REGION.upper()}</b> | Deployer: <b>#{deployer['deploy_id']}</b>"
         )
 
     progress_msg = await bot.send_message(user_id, render_text(), parse_mode="html")
 
     last_rendered = None
 
-    def make_cb(idx):
+    def make_cb():
         def cb(status, message, progress):
-            progress_state[idx]["message"] = message or progress_state[idx]["message"]
+            progress_state["message"] = message or progress_state["message"]
             if progress is not None:
-                progress_state[idx]["progress"] = progress
+                progress_state["progress"] = progress
         return cb
 
     async def update_display(force=False):
         nonlocal last_rendered
         try:
-            key = (
-                progress_state[1]["progress"], progress_state[1]["message"],
-                progress_state[2]["progress"], progress_state[2]["message"],
-                progress_state[1]["done"], progress_state[2]["done"],
-            )
+            key = (progress_state["progress"], progress_state["message"], progress_state["done"])
             if not force and key == last_rendered:
                 return
             await bot.edit_message(user_id, progress_msg.id, render_text(), parse_mode="html")
             last_rendered = key
         except Exception as e:
-            logger.warning(f"Failed to update dual deploy progress: {e}")
+            logger.warning(f"Failed to update deploy progress: {e}")
 
-    # Launch both deployments concurrently in threads
-    task1 = asyncio.create_task(
+    # Launch deployment in thread
+    task = asyncio.create_task(
         asyncio.to_thread(
             deploy_api_container,
-            session_token_1, app_name_1, deploy_url_1, auth_token,
-            API_CLAIMER_MIRROR_SITE_1, make_cb(1)
-        )
-    )
-    task2 = asyncio.create_task(
-        asyncio.to_thread(
-            deploy_api_container,
-            session_token_2, app_name_2, deploy_url_2, auth_token,
-            API_CLAIMER_MIRROR_SITE_2, make_cb(2)
+            session_token, app_name, deploy_url, auth_token,
+            API_CLAIMER_MIRROR_SITE, make_cb()
         )
     )
 
-    pending = {task1, task2}
-    task_map = {task1: 1, task2: 2}
-
-    while pending:
-        done_now, pending = await asyncio.wait(pending, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
-        for t in done_now:
-            idx = task_map[t]
-            try:
-                ok, res = t.result()
-            except Exception as e:
-                ok, res = False, {"error": str(e)}
-            progress_state[idx]["done"] = True
-            progress_state[idx]["success"] = ok
-            progress_state[idx]["result"] = res
-            if ok:
-                progress_state[idx]["progress"] = 100
-                progress_state[idx]["message"] = "Deployed successfully!"
-            else:
-                progress_state[idx]["message"] = get_user_friendly_deploy_error(res)
+    while not task.done():
+        await asyncio.wait([task], timeout=1.0)
         await update_display()
+
+    try:
+        ok, res = task.result()
+    except Exception as e:
+        ok, res = False, {"error": str(e)}
+        
+    progress_state["done"] = True
+    progress_state["success"] = ok
+    progress_state["result"] = res
+    if ok:
+        progress_state["progress"] = 100
+        progress_state["message"] = "Deployed successfully!"
+    else:
+        progress_state["message"] = get_user_friendly_deploy_error(res)
 
     # Final forced update
     await update_display(force=True)
 
-    ok1 = progress_state[1]["success"]
-    res1 = progress_state[1]["result"]
-    ok2 = progress_state[2]["success"]
-    res2 = progress_state[2]["result"]
-
     status_url = build_api_claimer_status_url(username_clean)
 
-    if ok1 or ok2:
-        final_text = f"✅ Deployed successfully! (Batch #{batch['batch_id']})\n\nDashboard URL: {status_url}"
+    if ok:
+        final_text = f"✅ Deployed successfully! (Deployer #{deployer['deploy_id']})\n\nDashboard URL: {status_url}"
         buttons = [[Button.url("📊 Dashboard", status_url)]]
     else:
-        final_text = "⚠️ Deployments failed. Please contact support."
+        final_text = "⚠️ Deployment failed. Please contact support."
         buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
 
     try:
@@ -540,9 +518,9 @@ async def animate_dual_deploy_progress(user_id: int, username_clean: str,
             buttons=buttons
         )
     except Exception as e:
-        logger.warning(f"Failed to edit final dual deploy message: {e}")
+        logger.warning(f"Failed to edit final deploy message: {e}")
 
-    return app_name_1, ok1, res1, app_name_2, ok2, res2, deploy_url_1, deploy_url_2, auth_token
+    return app_name, ok, res, deploy_url, auth_token
 
 
 async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: int, plan_amount: float, is_bulk_points: bool = False, points_amount: int = 0):
@@ -640,46 +618,35 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                     except Exception as e:
                         logger.error(f"Error processing referral reward: {e}")
 
-                # === API CLAIMER SPECIFIC: DUAL DEPLOY CONTAINERS ===
+                # === API CLAIMER SPECIFIC: SINGLE DEPLOY CONTAINER ===
                 if product_type == "api_claimer":
-                    session_token_1 = session.get("session_token")
-                    session_token_2 = session.get("session_token_2")
-                    if session_token_1 and session_token_2:
+                    session_token = session.get("session_token")
+                    if session_token:
                         now_dt = datetime.now(timezone.utc)
                         expires_at = now_dt + timedelta(hours=hours)
 
-                        deploy_result = await animate_dual_deploy_progress(
-                            user_id, username_clean, session_token_1, session_token_2
+                        deploy_result = await animate_deploy_progress(
+                            user_id, username_clean, session_token
                         )
 
-                        if len(deploy_result) == 9:
-                            app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
-                        else:
-                            app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
-                            dep_url_1, dep_url_2, auth_tok = "", "", ""
+                        app_name, ok, res, dep_url, auth_tok = deploy_result
 
-                        # Save both containers to DB
-                        for (app_name, ok, res, mirror, deploy_url, tok) in [
-                            (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
-                            (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
-                        ]:
-                            web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
-                            deployed_apps_col.insert_one({
-                                "user_id": user_id,
-                                "username": username_clean,
-                                "app_name": app_name,
-                                "session_token": tok,
-                                "mirror_site": mirror,
-                                "deploy_url": deploy_url,
-                                "deployed_at": now_dt,
-                                "expires_at": expires_at,
-                                "status": "active" if ok else "deploy_failed",
-                                "web_url": web_url,
-                                "region": API_CLAIMER_REGION,
-                                "product_type": "api_claimer"
-                            })
+                        web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
+                        deployed_apps_col.insert_one({
+                            "user_id": user_id,
+                            "username": username_clean,
+                            "app_name": app_name,
+                            "session_token": session_token,
+                            "mirror_site": API_CLAIMER_MIRROR_SITE,
+                            "deploy_url": dep_url,
+                            "deployed_at": now_dt,
+                            "expires_at": expires_at,
+                            "status": "active" if ok else "deploy_failed",
+                            "web_url": web_url,
+                            "region": API_CLAIMER_REGION,
+                            "product_type": "api_claimer"
+                        })
 
-                        # Upsert api_subscriptions with both app names
                         api_subscriptions_col.update_one(
                             {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
                             {
@@ -687,30 +654,20 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                                     "user_id": user_id,
                                     "username": username_clean,
                                     "product_type": "api_claimer",
-                                    "app_name_1": app_name_1,
-                                    "app_name_2": app_name_2,
+                                    "app_name": app_name,
                                     "api_url": api_url,
                                     "expires_at": expires_at,
                                     "status": "active",
-                                    "session_token": session_token_1,
-                                    "session_token_2": session_token_2,
+                                    "session_token": session_token,
                                     "updated_at": now_dt
                                 }
                             },
                             upsert=True
                         )
-                    elif session_token_1:
-                        # Only one key provided
-                        await bot.send_message(
-                            user_id,
-                            f"⚠️ <b>Second API key missing.</b>\nOnly one container can be deployed. Contact support.",
-                            parse_mode="html",
-                            buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
-                        )
                     else:
                         await bot.send_message(
                             user_id,
-                            f"⚠️ <b>API keys not found.</b>\nContact support to deploy your containers manually.",
+                            f"⚠️ <b>API key not found.</b>\nContact support to deploy your container manually.",
                             parse_mode="html",
                             buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
                         )
@@ -1025,7 +982,7 @@ async def check_active_users_loop():
                                         }}
                                     )
                                     api_subscriptions_col.update_many(
-                                        {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
+                                        {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}, {"app_name": app_name}]},
                                         {"$set": {
                                             "status": "expired_deleted",
                                             "deleted_at": now,
@@ -1121,7 +1078,7 @@ async def check_active_users_loop():
                                     }}
                                 )
                                 api_subscriptions_col.update_many(
-                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
+                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}, {"app_name": app_name}]},
                                     {"$set": {
                                         "status": "expired_deleted",
                                         "deleted_at": now,
@@ -1150,11 +1107,12 @@ async def check_active_users_loop():
 
                             logger.info(f"[DB_CLEANUP] ✅ Deleted container: {app_name}")
                         else:
-                            logger.error(
-                                f"[DB_CLEANUP] ❌ Failed to delete {app_name}: {delete_resp}"
-                            )
+                            # Not an error per se, we just don't do anything yet if not expired
+                            # Leaving this block blank to suppress false error logging for active ones.
+                            pass
 
-                        _expired_cleanup_sent[deletion_key] = True
+                        if seconds_left <= 60:
+                             _expired_cleanup_sent[deletion_key] = True
 
                     except Exception as e:
                         logger.exception(f"[DB_CLEANUP] Error processing container: {e}")
@@ -1258,7 +1216,7 @@ async def apicstats_handler(event):
     expired_containers = len([c for c in db_containers if c.get("status") in ["expired_deleted", "terminated"]])
     
     report_lines = []
-    report_lines.append("<b>📊 API REBATE CLAIMER STATS (Dual Deploy)</b>")
+    report_lines.append("<b>📊 API REBATE CLAIMER STATS (Single Deploy)</b>")
     report_lines.append(f"📅 <i>Generated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}</i>")
     report_lines.append("")
     report_lines.append(f"<b>📈 Summary:</b>")
@@ -1310,7 +1268,6 @@ async def apicstats_handler(event):
                 status_emoji = "⚪"
             
             clean_username = username.lstrip("@") if username else ""
-            # Find both containers for this user (dual deploy)
             containers = list(deployed_apps_col.find({"username": clean_username, "product_type": "api_claimer"}))
             container_info = ""
             for c in containers:
@@ -1464,7 +1421,7 @@ async def extend_time_handler(event):
                 results.append(f"✅ <b>{product_name}</b>: Extended by {hours_to_add} hours")
                 
                 if product == "api_claimer":
-                    # Update ALL active containers for this user (dual deploy = 2)
+                    # Update active containers for this user
                     containers = list(deployed_apps_col.find({"username": target_username, "status": "active"}))
                     for container in containers:
                         current_expires = container.get("expires_at")
@@ -1487,7 +1444,7 @@ async def extend_time_handler(event):
                                     {"$set": {"expires_at": new_expires}}
                                 )
                                 api_subscriptions_col.update_many(
-                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
+                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}, {"app_name": app_name}]},
                                     {"$set": {"expires_at": new_expires}}
                                 )
                                 results.append(f"   📦 Container <code>{app_name}</code> [{mirror}] updated to: {new_expires.strftime('%Y-%m-%d %H:%M UTC')}")
@@ -2021,7 +1978,7 @@ async def buy_product_handler(event):
             "• <code>alice123</code>\n"
             "• <code>@alice123</code>\n\n"
             "Do NOT send profile links or screenshots.\n\n"
-            "<i>After username confirmation, you'll need to provide <b>2 Stake API keys</b> for dual-container deployment.</i>"
+            "<i>After username confirmation, you'll need to provide your <b>Stake API key</b> for container deployment.</i>"
         )
     else:
         text = (
@@ -2134,7 +2091,6 @@ async def terminate_sub_menu_handler(event):
     else:
         remaining_hours = 0
 
-    # Calculate refund based on the correct product's rate
     refund_amount = 0.0
     if remaining_hours > 0:
         if product_name == "Code Rebate Claimer":
@@ -2234,7 +2190,7 @@ async def terminate_execute_handler(event):
                         }}
                     )
                     api_subscriptions_col.update_many(
-                        {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
+                        {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}, {"app_name": app_name}]},
                         {"$set": {
                             "status": "terminated",
                             "terminated_at": now_dt,
@@ -2294,7 +2250,7 @@ async def text_input_handler(event):
     
     raw_text = event.raw_text.strip()
 
-    # --- HANDLE FIRST SESSION TOKEN (API KEY 1) FOR API CLAIMER ---
+    # --- HANDLE SESSION TOKEN (API KEY) FOR API CLAIMER ---
     if session.get("expecting_session_token"):
         session["expecting_session_token"] = False
         
@@ -2302,59 +2258,20 @@ async def text_input_handler(event):
             await event.respond(
                 "❌ Invalid API key. Your Stake API key should be a long string.\n\n"
                 "Please send a valid API key or click below to skip.",
-                buttons=[[Button.inline("⏭️ Skip both keys", b"skip_session_token")]]
+                buttons=[[Button.inline("⏭️ Skip key", b"skip_session_token")]]
             )
             session["expecting_session_token"] = True  # keep waiting
             return
         
         session["session_token"] = raw_text
         
-        # Now ask for second API key
-        session["expecting_session_token_2"] = True
-        username_clean = session.get("username", "UNKNOWN")
-        
-        text = (
-            f"✅ <b>API Key 1 Saved!</b> [{API_CLAIMER_MIRROR_SITE_1}]\n\n"
-            f"Username: <code>@{username_clean}</code>\n\n"
-            f"<b>Step 3: Provide your Second Stake API Key</b>\n\n"
-            f"This key will be used for the second container [{API_CLAIMER_MIRROR_SITE_2}].\n\n"
-            "Please paste your second API key now:"
-        )
-        buttons = [
-            [Button.inline("⏭️ Use same key for both", b"use_same_api_key")],
-            [Button.inline("⏭️ Skip second key", b"skip_session_token_2")],
-            [Button.inline("❌ Cancel", b"back_to_start")]
-        ]
-        await event.respond(text, parse_mode="html", buttons=buttons)
-        return
-
-    # --- HANDLE SECOND SESSION TOKEN (API KEY 2) FOR API CLAIMER ---
-    if session.get("expecting_session_token_2"):
-        session["expecting_session_token_2"] = False
-        
-        if len(raw_text) < 20:
-            await event.respond(
-                "❌ Invalid API key. Your Stake API key should be a long string.\n\n"
-                "Please send a valid key, or use the options below.",
-                buttons=[
-                    [Button.inline("⏭️ Use same key for both", b"use_same_api_key")],
-                    [Button.inline("⏭️ Skip second key", b"skip_session_token_2")],
-                ]
-            )
-            session["expecting_session_token_2"] = True  # keep waiting
-            return
-        
-        session["session_token_2"] = raw_text
-        
         username_clean = session.get("username", "UNKNOWN")
         prod_name = "API Rebate Claimer"
         
         text = (
-            f"✅ <b>Both API Keys Saved!</b>\n\n"
+            f"✅ <b>API Key Saved!</b> [{API_CLAIMER_MIRROR_SITE}]\n\n"
             f"Username: <code>@{username_clean}</code>\n"
             f"Product: <b>{prod_name}</b>\n\n"
-            f"• Key 1 [{API_CLAIMER_MIRROR_SITE_1}]: ✅\n"
-            f"• Key 2 [{API_CLAIMER_MIRROR_SITE_2}]: ✅\n\n"
             "Choose payment method:"
         )
         buttons = [
@@ -2541,85 +2458,9 @@ async def text_input_handler(event):
 
 # ================== API KEY HELPER CALLBACKS ==================
 
-@bot.on(events.CallbackQuery(data=b"use_same_api_key"))
-async def use_same_api_key_handler(event):
-    """User wants to use the same API key for both containers."""
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.get(user_id)
-    
-    if not session:
-        return await event.respond("Session expired. Restart with /start.")
-    
-    session["expecting_session_token_2"] = False
-    key1 = session.get("session_token")
-    if not key1:
-        return await event.respond("Session expired. Restart with /start.")
-    
-    session["session_token_2"] = key1  # Use same key
-    
-    username_clean = session.get("username", "UNKNOWN")
-    
-    text = (
-        f"✅ <b>Same API Key set for both containers.</b>\n\n"
-        f"Username: <code>@{username_clean}</code>\n"
-        f"• Key 1 [{API_CLAIMER_MIRROR_SITE_1}]: ✅\n"
-        f"• Key 2 [{API_CLAIMER_MIRROR_SITE_2}]: ✅ (same)\n\n"
-        "Choose payment method:"
-    )
-    buttons = [
-        [Button.inline("💳 Pay with Crypto / Points", b"buy_crypto")],
-        [Button.inline("💵 Pay with UPI", b"buy_upi")],
-        [
-            Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK),
-            Button.url("📢 Updates Channel", UPDATES_CHANNEL_LINK),
-        ],
-    ]
-    
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
-
-@bot.on(events.CallbackQuery(data=b"skip_session_token_2"))
-async def skip_session_token_2_handler(event):
-    """User skips the second API key."""
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.get(user_id)
-    
-    if not session:
-        return await event.respond("Session expired. Restart with /start.")
-    
-    session["expecting_session_token_2"] = False
-    
-    username_clean = session.get("username", "UNKNOWN")
-    
-    text = (
-        f"⚠️ <b>Second API Key Skipped</b>\n\n"
-        f"Username: <code>@{username_clean}</code>\n"
-        f"• Key 1 [{API_CLAIMER_MIRROR_SITE_1}]: ✅\n"
-        f"• Key 2 [{API_CLAIMER_MIRROR_SITE_2}]: ⚠️ Skipped\n\n"
-        f"<i>Only one container will be deployed.</i>\n\n"
-        "Choose payment method:"
-    )
-    buttons = [
-        [Button.inline("💳 Pay with Crypto / Points", b"buy_crypto")],
-        [Button.inline("💵 Pay with UPI", b"buy_upi")],
-        [
-            Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK),
-            Button.url("📢 Updates Channel", UPDATES_CHANNEL_LINK),
-        ],
-    ]
-    
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
-
 @bot.on(events.CallbackQuery(data=b"skip_session_token"))
 async def skip_session_token_handler(event):
-    """User skips both API keys."""
+    """User skips the API key."""
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
@@ -2628,16 +2469,15 @@ async def skip_session_token_handler(event):
         return await event.respond("Session expired. Restart with /start.")
     
     session["expecting_session_token"] = False
-    session["expecting_session_token_2"] = False
     
     username_clean = session.get("username", "UNKNOWN")
     prod_name = "API Rebate Claimer"
     
     text = (
-        f"<b>⚠️ API Keys Skipped</b>\n\n"
+        f"<b>⚠️ API Key Skipped</b>\n\n"
         f"Username: <code>@{username_clean}</code>\n"
         f"Product: <b>{prod_name}</b>\n\n"
-        f"<i>No containers will be deployed automatically. Contact support to deploy manually.</i>\n\n"
+        f"<i>No container will be deployed automatically. Contact support to deploy manually.</i>\n\n"
         "Choose payment method:"
     )
     buttons = [
@@ -2709,12 +2549,12 @@ async def confirm_yes_handler(event):
         text = (
             f"Stake username saved: <code>@{username_clean}</code>\n"
             f"Product: <b>{prod_name}</b>\n\n"
-            f"<b>Step 2: Provide API Key 1</b> [{API_CLAIMER_MIRROR_SITE_1}]\n\n"
-            "Your dual-container setup requires <b>2 Stake API keys</b>.\n\n"
-            f"Please paste your <b>first API key</b> (for {API_CLAIMER_MIRROR_SITE_1}) now:"
+            f"<b>Step 2: Provide API Key</b> [{API_CLAIMER_MIRROR_SITE}]\n\n"
+            "Your setup requires your <b>Stake API key</b>.\n\n"
+            f"Please paste your <b>API key</b> now:"
         )
         buttons = [
-            [Button.inline("⏭️ Skip both keys", b"skip_session_token")],
+            [Button.inline("⏭️ Skip key", b"skip_session_token")],
             [Button.inline("❌ Cancel", b"back_to_start")]
         ]
         session["expecting_session_token"] = True
@@ -2920,43 +2760,33 @@ async def pay_points_handler(event):
             pass
         
         if prod == "api_claimer":
-            # === API CLAIMER: DUAL DEPLOY CONTAINERS ===
-            session_token_1 = session.get("session_token")
-            session_token_2 = session.get("session_token_2")
-            if session_token_1 and session_token_2:
+            # === API CLAIMER: SINGLE DEPLOY CONTAINER ===
+            session_token = session.get("session_token")
+            if session_token:
                 now_dt = datetime.now(timezone.utc)
                 expires_at = now_dt + timedelta(hours=hours)
 
-                deploy_result = await animate_dual_deploy_progress(
-                    user_id, username_clean, session_token_1, session_token_2
+                deploy_result = await animate_deploy_progress(
+                    user_id, username_clean, session_token
                 )
 
-                if len(deploy_result) == 9:
-                    app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
-                else:
-                    app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
-                    dep_url_1, dep_url_2, auth_tok = "", "", ""
+                app_name, ok, res, dep_url, auth_tok = deploy_result
 
-                # Save both containers to DB
-                for (app_name, ok, res, mirror, deploy_url, tok) in [
-                    (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
-                    (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
-                ]:
-                    web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
-                    deployed_apps_col.insert_one({
-                        "user_id": user_id,
-                        "username": username_clean,
-                        "app_name": app_name,
-                        "session_token": tok,
-                        "mirror_site": mirror,
-                        "deploy_url": deploy_url,
-                        "deployed_at": now_dt,
-                        "expires_at": expires_at,
-                        "status": "active" if ok else "deploy_failed",
-                        "web_url": web_url,
-                        "region": API_CLAIMER_REGION,
-                        "product_type": "api_claimer"
-                    })
+                web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
+                deployed_apps_col.insert_one({
+                    "user_id": user_id,
+                    "username": username_clean,
+                    "app_name": app_name,
+                    "session_token": session_token,
+                    "mirror_site": API_CLAIMER_MIRROR_SITE,
+                    "deploy_url": dep_url,
+                    "deployed_at": now_dt,
+                    "expires_at": expires_at,
+                    "status": "active" if ok else "deploy_failed",
+                    "web_url": web_url,
+                    "region": API_CLAIMER_REGION,
+                    "product_type": "api_claimer"
+                })
 
                 api_subscriptions_col.update_one(
                     {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
@@ -2965,29 +2795,23 @@ async def pay_points_handler(event):
                             "user_id": user_id,
                             "username": username_clean,
                             "product_type": "api_claimer",
-                            "app_name_1": app_name_1,
-                            "app_name_2": app_name_2,
+                            "app_name": app_name,
                             "api_url": api_url,
                             "expires_at": expires_at,
                             "status": "active",
-                            "session_token": session_token_1,
-                            "session_token_2": session_token_2,
+                            "session_token": session_token,
                             "updated_at": now_dt
                         }
                     },
                     upsert=True
                 )
-            elif session_token_1:
-                await bot.send_message(
-                    user_id,
-                    "⚠️ <b>Second API key missing.</b>\nOnly one container can be deployed. Contact support.",
-                    parse_mode="html",
-                    buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
-                )
+            elif session.get("expecting_session_token") is False:
+                # Key skipped, continue gracefully
+                pass
             else:
                 await bot.send_message(
                     user_id,
-                    "⚠️ <b>No API keys provided.</b>\nContact support to deploy your containers manually.",
+                    "⚠️ <b>No API key provided.</b>\nContact support to deploy your container manually.",
                     parse_mode="html",
                     buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
                 )
@@ -3144,7 +2968,7 @@ async def broadcast_handler(event):
 # ================== MAIN ==================
 
 def main():
-    logger.info("Rebate Buy Bot (Dual Batch API Claimer) is running...")
+    logger.info("Rebate Buy Bot (Single Deployer) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
