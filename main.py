@@ -33,13 +33,13 @@ API_CLAIMER_AUTH_URL = "https://code-auth1-4df5f5b73886.herokuapp.com"  # Same a
 API_CLAIMER_DEPLOYERS = [
     {
         "deploy_id": 1,
-        "url": "https://api-claimer-deploy-3-fa01873d3aed.herokuapp.com",
+        "url": "hhttps://api-claimer-1-7d4b61900826.herokuapp.com",
         "token": "fuck1234",
         "limit": 99
     },
     {
         "deploy_id": 2,
-        "url": "https://api-claimer-deploy-4-bc437f1aef0b.herokuapp.com",
+        "url": "https://api-claimer-2-cfed7420dc82.herokuapp.com",
         "token": "fuck1234",
         "limit": 99
     },
