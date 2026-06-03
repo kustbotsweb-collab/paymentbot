@@ -7,6 +7,7 @@ import string
 import json
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button, functions, types
+from telethon.errors import MessageNotModifiedError
 from pymongo import MongoClient
 
 # ================== CONFIG ==================
@@ -33,13 +34,13 @@ API_CLAIMER_AUTH_URL = "https://code-auth1-4df5f5b73886.herokuapp.com"  # Same a
 API_CLAIMER_DEPLOYERS = [
     {
         "deploy_id": 1,
-        "url": "hhttps://api-claimer-1-7d4b61900826.herokuapp.com",
+        "url": "https://api-claimer-1-7d4b61900826.herokuapp.com",
         "token": "fuck1234",
         "limit": 99
     },
     {
         "deploy_id": 2,
-        "url": "https://api-claimer-2-cfed7420dc82.herokuapp.com",
+        "url": "https://api-claimer-deploy-4-bc437f1aef0b.herokuapp.com",
         "token": "fuck1234",
         "limit": 99
     },
@@ -468,6 +469,9 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
                 return
             await bot.edit_message(user_id, progress_msg.id, render_text(), parse_mode="html")
             last_rendered = key
+        except MessageNotModifiedError:
+            # Ignore harmless telethon error when message content doesn't actually change
+            pass
         except Exception as e:
             logger.warning(f"Failed to update deploy progress: {e}")
 
