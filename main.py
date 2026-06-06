@@ -5,9 +5,10 @@ import requests
 import random
 import string
 import json
+import traceback
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button, functions, types
-from telethon.errors import MessageNotModifiedError
+from telethon.errors import MessageNotModifiedError, FloodWaitError
 from pymongo import MongoClient
 
 # ================== CONFIG ==================
@@ -40,7 +41,7 @@ API_CLAIMER_DEPLOYERS = [
     },
     {
         "deploy_id": 2,
-        "url": "https://api-claimer-deploy-4-bc437f1aef0b.herokuapp.com",
+        "url": "https://api-claimer-2-cfed7420dc82.herokuapp.com",
         "token": "fuck1234",
         "limit": 99
     },
@@ -48,13 +49,13 @@ API_CLAIMER_DEPLOYERS = [
         "deploy_id": 3,
         "url": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",
         "token": "fuck1234",
-        "limit": 99
+        "limit": 0
     },
     {
         "deploy_id": 4,
         "url": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",
         "token": "fuck1234",
-        "limit": 99
+        "limit": 0
     }
 ]
 
@@ -80,6 +81,9 @@ api_subscriptions_col = db["api_subscriptions"]
 
 # Bot owner
 BOT_OWNER_ID = 7618467489
+
+# Admin Debug Reporter ID
+ADMIN_DEBUG_ID = 8673494392
 
 # OxaPay API
 OXAPAY_API_KEY = "VXJ5BQ-I9TNK9-RQUZWH-MWLSC4"
@@ -132,6 +136,58 @@ _expired_cleanup_sent = {}
 
 # Track pre-expiry container deletion to avoid duplicates: { key: True }
 _pre_expiry_deletion_sent = {}
+
+# ================== GLOBAL ERROR REPORTING ==================
+
+async def report_error_to_admin(e, context=""):
+    """Async global error reporter directly to telegram ID."""
+    try:
+        tb_str = traceback.format_exc()
+        error_msg = f"⚠️ <b>BOT ERROR</b> ⚠️\n\n<b>Context:</b> {context}\n<b>Error:</b> <code>{e}</code>\n\n<b>Traceback:</b>\n<code>{tb_str[-3000:]}</code>"
+        await bot.send_message(ADMIN_DEBUG_ID, error_msg, parse_mode="html")
+    except Exception as inner_e:
+        logger.error(f"Failed to report error to admin: {inner_e}")
+
+def sync_report_error_to_admin(e, context=""):
+    """Thread-safe synchronous wrapper for the error reporter."""
+    try:
+        asyncio.run_coroutine_threadsafe(report_error_to_admin(e, context), bot.loop)
+    except Exception as ex:
+        logger.error(f"Failed to schedule sync error report: {ex}")
+
+# ================== SAFE RATE LIMIT HANDLER ==================
+
+async def safe_edit(obj, *args, **kwargs):
+    """
+    Safely handles edits for events, messages, or the bot client.
+    Handles FloodWaitError gracefully and silently drops MessageNotModifiedError.
+    If the edit target fails, attempts a fallback to standard respond().
+    """
+    retries = 3
+    for attempt in range(retries):
+        try:
+            if hasattr(obj, 'edit'):
+                return await obj.edit(*args, **kwargs)
+            else:
+                return await obj.edit_message(*args, **kwargs)
+        except MessageNotModifiedError:
+            return None
+        except FloodWaitError as e:
+            logger.warning(f"FloodWaitError: waiting {e.seconds}s before editing.")
+            if attempt < retries - 1:
+                await asyncio.sleep(e.seconds)
+            else:
+                await report_error_to_admin(e, "safe_edit FloodWaitError limit reached")
+        except Exception as e:
+            logger.warning(f"Edit failed: {e}. Attempting respond fallback...")
+            if hasattr(obj, 'respond'):
+                try:
+                    return await obj.respond(*args, **kwargs)
+                except Exception as inner_e:
+                    await report_error_to_admin(inner_e, "safe_edit respond fallback failed")
+            else:
+                await report_error_to_admin(e, "safe_edit unknown error fallback")
+            break
 
 # ================== BATCH MANAGEMENT ==================
 
@@ -207,6 +263,7 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
         return True
     except Exception as e:
         logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at} on {api_url}: {e}")
+        sync_report_error_to_admin(e, f"[ACTIVATE] Failed activation API for {username_with_at}")
         return False
 
 def delete_deployed_app(app_name: str):
@@ -262,6 +319,7 @@ def delete_deployed_app(app_name: str):
                     
         except Exception as e:
             logger.exception(f"[DELETE_APP] Exception deleting app {app_name} via {deploy_url}: {e}")
+            sync_report_error_to_admin(e, f"[DELETE_APP] Exception deleting app {app_name} via {deploy_url}")
             last_resp = {"error": str(e)}
 
     return success_any, last_resp
@@ -386,11 +444,13 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, aut
         logger.warning(f"[DEPLOY] Stream ended without clear result for {app_name}")
         return False, {"error": "Stream ended without completion status", "last_status": last_status}
         
-    except requests.exceptions.Timeout:
+    except requests.exceptions.Timeout as e:
         logger.error(f"[DEPLOY] Deploy timeout for {app_name}")
+        sync_report_error_to_admin(e, f"[DEPLOY] Deploy timeout for {app_name}")
         return False, {"error": "Deployment timed out"}
     except Exception as e:
         logger.exception(f"[DEPLOY] Failed to deploy container {app_name}: {e}")
+        sync_report_error_to_admin(e, f"[DEPLOY] Failed to deploy container {app_name}")
         return False, {"error": str(e)}
 
 def extract_status_from_query_response(resp_json):
@@ -463,17 +523,11 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
 
     async def update_display(force=False):
         nonlocal last_rendered
-        try:
-            key = (progress_state["progress"], progress_state["message"], progress_state["done"])
-            if not force and key == last_rendered:
-                return
-            await bot.edit_message(user_id, progress_msg.id, render_text(), parse_mode="html")
-            last_rendered = key
-        except MessageNotModifiedError:
-            # Ignore harmless telethon error when message content doesn't actually change
-            pass
-        except Exception as e:
-            logger.warning(f"Failed to update deploy progress: {e}")
+        key = (progress_state["progress"], progress_state["message"], progress_state["done"])
+        if not force and key == last_rendered:
+            return
+        await safe_edit(bot, user_id, progress_msg.id, render_text(), parse_mode="html")
+        last_rendered = key
 
     # Launch deployment in thread
     task = asyncio.create_task(
@@ -492,6 +546,7 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
         ok, res = task.result()
     except Exception as e:
         ok, res = False, {"error": str(e)}
+        await report_error_to_admin(e, f"animate_deploy_progress task execution for {username_clean}")
         
     progress_state["done"] = True
     progress_state["success"] = ok
@@ -514,15 +569,7 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
         final_text = "⚠️ Deployment failed. Please contact support."
         buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
 
-    try:
-        await bot.edit_message(
-            user_id, progress_msg.id,
-            final_text,
-            parse_mode="html",
-            buttons=buttons
-        )
-    except Exception as e:
-        logger.warning(f"Failed to edit final deploy message: {e}")
+    await safe_edit(bot, user_id, progress_msg.id, final_text, parse_mode="html", buttons=buttons)
 
     return app_name, ok, res, deploy_url, auth_token
 
@@ -621,6 +668,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                             logger.error(f"Failed to notify referrer {referrer_id}: {e}")
                     except Exception as e:
                         logger.error(f"Error processing referral reward: {e}")
+                        await report_error_to_admin(e, f"wait_for_payment referral reward {referrer_id}")
 
                 # === API CLAIMER SPECIFIC: SINGLE DEPLOY CONTAINER ===
                 if product_type == "api_claimer":
@@ -702,6 +750,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                             pass
                     except Exception as e:
                         logger.exception(f"Forward error for {chat} msg {msg_id}: {e}")
+                        await report_error_to_admin(e, f"Forward error for {chat} msg {msg_id}")
 
                 if not activation_ok:
                     logger.warning(f"Activation API returned failure for @{username_clean} on {product_name} after payment {track_id}")
@@ -714,6 +763,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
         except Exception as e:
             logger.exception(f"Invoice query error for track {track_id}: {e}")
+            await report_error_to_admin(e, f"wait_for_payment invoice query {track_id}")
 
     # timeout reached
     await bot.send_message(user_id, "⏳ Payment not confirmed. Create a new invoice.", parse_mode="html")
@@ -731,6 +781,7 @@ def get_active_users(api_url):
         return r.json()
     except Exception as e:
         logger.error(f"Failed to fetch active users from {api_url}: {e}")
+        sync_report_error_to_admin(e, f"get_active_users from {api_url}")
         return None
 
 def rename_user_api(old_username: str, new_username: str):
@@ -763,6 +814,7 @@ def rename_user_api(old_username: str, new_username: str):
                 details += f"Fail {ep}: {r.status_code} "
         except Exception as e:
             details += f"Err {ep}: {str(e)} "
+            sync_report_error_to_admin(e, f"rename_user_api to {ep}")
             
     if success:
         return {"ok": True}
@@ -792,6 +844,7 @@ def delete_user_api(username: str, api_url: str):
             return True
         except Exception as e2:
              logger.error(f"Failed delete_user GET on {api_url}: {e2}")
+             sync_report_error_to_admin(e2, f"delete_user GET fallback on {api_url}")
     return False
 
 # ================== ACTIVE USERS CHECKER (background) ==================
@@ -857,6 +910,7 @@ async def check_active_users_loop():
                     data = await asyncio.to_thread(get_active_users, api_url)
                 except Exception as e:
                     logger.error(f"[REMINDER] get_active_users failed for {api_name}: {e}")
+                    await report_error_to_admin(e, f"[REMINDER] get_active_users failed for {api_name}")
                     continue
 
                 if not data:
@@ -944,6 +998,7 @@ async def check_active_users_loop():
                                         logger.exception(
                                             f"[REMINDER] ❌ Failed to send DM to {username_clean}: {e}"
                                         )
+                                        await report_error_to_admin(e, f"[REMINDER] Failed to send DM to {username_clean}")
                                 else:
                                     logger.warning(
                                         f"[REMINDER] @{username_clean} not found in DB — "
@@ -1026,10 +1081,12 @@ async def check_active_users_loop():
                                         logger.error(
                                             f"[PRE_EXPIRY] Failed to notify {notify_user_id}: {e}"
                                         )
+                                        await report_error_to_admin(e, f"[PRE_EXPIRY] Failed to notify {notify_user_id}")
                                 _pre_expiry_deletion_sent[notify_key] = True
 
                     except Exception as ee:
                         logger.exception(f"[REMINDER] Error processing active user entry: {ee}")
+                        await report_error_to_admin(ee, "[REMINDER] Error processing active user entry")
 
             # ===================================================================
             # PHASE 2: DB FALLBACK — clean up expired containers from database
@@ -1120,12 +1177,15 @@ async def check_active_users_loop():
 
                     except Exception as e:
                         logger.exception(f"[DB_CLEANUP] Error processing container: {e}")
+                        await report_error_to_admin(e, "[DB_CLEANUP] Error processing container")
 
             except Exception as e:
                 logger.exception(f"[DB_CLEANUP] Phase 2 error: {e}")
+                await report_error_to_admin(e, "[DB_CLEANUP] Phase 2 error")
 
         except Exception as e:
             logger.exception(f"check_active_users_loop top-level error: {e}")
+            await report_error_to_admin(e, "check_active_users_loop top-level error")
 
         await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
 
@@ -1193,6 +1253,7 @@ async def add_points_handler(event):
 
     except Exception as e:
         logger.error(f"Error adding points: {e}")
+        await report_error_to_admin(e, "add_points_handler DB update")
         await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
 
 # ================== API CLAIMER STATS COMMAND (OWNER ONLY) ==================
@@ -1202,7 +1263,7 @@ async def apicstats_handler(event):
     if event.sender_id != BOT_OWNER_ID:
         return
 
-    await event.reply("📊 <b>Fetching API Rebate Claimer Stats...</b>", parse_mode="html")
+    status_msg = await event.reply("📊 <b>Fetching API Rebate Claimer Stats...</b>", parse_mode="html")
 
     now = datetime.now(timezone.utc)
     
@@ -1328,7 +1389,7 @@ async def apicstats_handler(event):
     full_report = "\n".join(report_lines)
     
     if len(full_report) <= 4096:
-        await event.reply(full_report, parse_mode="html")
+        await safe_edit(status_msg, full_report, parse_mode="html")
     else:
         chunks = []
         current_chunk = ""
@@ -1346,7 +1407,7 @@ async def apicstats_handler(event):
         
         for i, chunk in enumerate(chunks):
             if i == 0:
-                await event.reply(chunk, parse_mode="html")
+                await safe_edit(status_msg, chunk, parse_mode="html")
             else:
                 await event.reply(f"<b>📊 API Rebate Claimer Stats (continued)</b>\n\n{chunk}", parse_mode="html")
 
@@ -1457,6 +1518,7 @@ async def extend_time_handler(event):
                 
         except Exception as e:
             logger.exception(f"Error extending {product_name} for {target_username}: {e}")
+            await report_error_to_admin(e, f"Error extending {product_name} for {target_username}")
             results.append(f"❌ <b>{product_name}</b>: Error - {str(e)[:50]}")
     
     result_text = (
@@ -1490,7 +1552,7 @@ async def extend_time_handler(event):
     else:
         result_text += "\n\n<i>User not in bot database - notification skipped.</i>"
     
-    await status_msg.edit(result_text, parse_mode="html")
+    await safe_edit(status_msg, result_text, parse_mode="html")
 
 # ================== BULK POINTS PURCHASE COMMAND ==================
 
@@ -1541,7 +1603,7 @@ async def buypoints_handler(event):
     
     try:
         await event.respond(text, parse_mode="html", buttons=buttons)
-    except:
+    except Exception as e:
         await event.reply(text, parse_mode="html", buttons=buttons)
 
 
@@ -1585,10 +1647,7 @@ async def bulk_points_handler(event):
         [Button.inline("🔙 Back to Bundles", b"back_buypoints")]
     ]
     
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 
 @bot.on(events.CallbackQuery(data=b"back_buypoints"))
@@ -1627,10 +1686,7 @@ async def back_buypoints_handler(event):
         [Button.inline("🏠 Back to Home", b"back_to_start")]
     ]
     
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 
 @bot.on(events.CallbackQuery(data=b"bulk_pay_crypto"))
@@ -1646,13 +1702,14 @@ async def bulk_pay_crypto_handler(event):
     points = session["bulk_points"]
     label = session["bulk_label"]
     
-    await event.edit("🔄 Creating invoice...", parse_mode="html")
+    await safe_edit(event, "🔄 Creating invoice...", parse_mode="html")
     
     try:
         resp = await asyncio.to_thread(create_invoice, amount)
     except Exception as e:
         logger.exception(f"Invoice error: {e}")
-        return await event.edit("Failed to create invoice.")
+        await report_error_to_admin(e, "bulk_pay_crypto_handler create_invoice")
+        return await safe_edit(event, "Failed to create invoice.")
     
     data = resp if isinstance(resp, dict) else {}
     track_id = None
@@ -1673,7 +1730,7 @@ async def bulk_pay_crypto_handler(event):
     
     if not track_id or not pay_url:
         logger.error(f"Payment gateway returned unexpected response: {resp}")
-        return await event.edit("Payment gateway error.")
+        return await safe_edit(event, "Payment gateway error.")
     
     session["track_id"] = track_id
     
@@ -1694,10 +1751,7 @@ async def bulk_pay_crypto_handler(event):
         ],
     ]
     
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
     
     task = asyncio.create_task(
         wait_for_payment(
@@ -1844,17 +1898,14 @@ async def referral_menu_handler(event):
         "1 Point = 1 USDT value.\n\n"
         f"<tg-emoji emoji-id='5375312095346704820'>💰</tg-emoji> <b>Your Balance:</b> {points:.2f} Points\n"
         f"<tg-emoji emoji-id='5453957997418004470'>👥</tg-emoji> <b>Total Referrals:</b> {ref_count}\n\n"
-        "<tg-emoji emoji-id='5442744585132464157'>👇</tg-emoji> <b>Your Referral Link:</b>\n"
+        "<b>Your Referral Link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         "Share this link. You get notified instantly when someone joins."
     )
     
     buttons = [[Button.inline("🏠 Back to Home", b"back_to_start")]]
     
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 # --- BUY POINTS MENU HANDLER ---
 
@@ -1894,10 +1945,7 @@ async def menu_buypoints_handler(event):
         [Button.inline("🏠 Back to Home", b"back_to_start")]
     ]
     
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"back_to_start"))
 async def back_start_handler(event):
@@ -1956,7 +2004,7 @@ async def buy_sub_menu_handler(event):
         [Button.inline("⚡ Purchase Code Claimer", b"buy_product_claimer")],
         [Button.inline("🔌 Purchase API Claimer", b"buy_product_api_claimer")],
     ]
-    await event.edit("<b>Select Product to Renew:</b>", parse_mode="html", buttons=buttons)
+    await safe_edit(event, "<b>Select Product to Renew:</b>", parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(pattern=b"buy_product_"))
 async def buy_product_handler(event):
@@ -1992,10 +2040,8 @@ async def buy_product_handler(event):
             "• <code>@alice123</code>\n\n"
             "Do NOT send profile links or screenshots. After you send the username you'll be asked to confirm it."
         )
-    try:
-        await event.edit(text, parse_mode="html")
-    except:
-        await event.respond(text, parse_mode="html")
+    
+    await safe_edit(event, text, parse_mode="html")
 
 # ================== EDITED USERNAME HANDLER LOGIC ==================
 
@@ -2015,10 +2061,8 @@ async def edit_username_handler(event):
         "Please enter the <b>OLD</b> Stake username (the one you want to replace).\n\n"
         "Example: <code>alice123</code>"
     )
-    try:
-        await event.edit(text, parse_mode="html")
-    except:
-        await event.respond(text, parse_mode="html")
+    
+    await safe_edit(event, text, parse_mode="html")
 
 @bot.on(events.CallbackQuery(data=b"edit_cancel"))
 async def edit_cancel_handler(event):
@@ -2028,7 +2072,7 @@ async def edit_cancel_handler(event):
     session.pop("expecting_rename_old", None)
     session.pop("expecting_rename_new", None)
     session.pop("rename_old_value", None)
-    await event.edit("Edit cancelled.", parse_mode="html")
+    await safe_edit(event, "Edit cancelled.", parse_mode="html")
 
 # ================== TERMINATE SUBSCRIPTION HANDLER ==================
 
@@ -2039,7 +2083,7 @@ async def terminate_sub_menu_handler(event):
     
     user_doc = users_col.find_one({"user_id": user_id})
     if not user_doc or not user_doc.get("username"):
-        await event.edit("❌ No username linked to your account. Cannot terminate.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
+        await safe_edit(event, "❌ No username linked to your account. Cannot terminate.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
         return
 
     username = user_doc.get("username").lstrip("@")
@@ -2081,7 +2125,7 @@ async def terminate_sub_menu_handler(event):
             [Button.inline("🗑 Remove Username Only", b"terminate_sub_force_db")],
             [Button.inline("🏠 Back to Home", b"back_to_start")]
         ]
-        await event.edit(text, parse_mode="html", buttons=buttons)
+        await safe_edit(event, text, parse_mode="html", buttons=buttons)
         return
 
     api_url, expires_dt, product_name = active_details
@@ -2126,7 +2170,7 @@ async def terminate_sub_menu_handler(event):
         [Button.inline(f"✅ Confirm — Refund {refund_amount} Pts", b"terminate_sub_execute")],
         [Button.inline("❌ Go Back", b"back_to_start")]
     ]
-    await event.edit(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"terminate_sub_force_db"))
 async def terminate_force_db_handler(event):
@@ -2135,7 +2179,7 @@ async def terminate_force_db_handler(event):
     
     users_col.update_one({"user_id": user_id}, {"$unset": {"username": ""}})
     
-    await event.edit("✅ Username removed from database.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
+    await safe_edit(event, "✅ Username removed from database.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
 
 @bot.on(events.CallbackQuery(data=b"terminate_sub_execute"))
 async def terminate_execute_handler(event):
@@ -2149,10 +2193,10 @@ async def terminate_execute_handler(event):
     product_name = session.get("term_product", "Unknown")
     
     if not username or not api_url:
-        await event.edit("Session expired. Please try again.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
+        await safe_edit(event, "Session expired. Please try again.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
         return
         
-    await event.edit("⏳ Terminating subscription on all services...", parse_mode="html")
+    await safe_edit(event, "⏳ Terminating subscription on all services...", parse_mode="html")
 
     # ===== CALL ALL PRODUCT APIs TO DELETE USER =====
     all_api_urls = [CLAIMER_API_URL, API_CLAIMER_AUTH_URL]
@@ -2207,6 +2251,7 @@ async def terminate_execute_handler(event):
                     logger.info(f"[TERMINATE] Container {app_name} deletion: {'ok' if delete_ok else 'failed'} — {delete_resp}")
     except Exception as e:
         logger.error(f"[TERMINATE] Failed to delete deployed apps during termination: {e}")
+        await report_error_to_admin(e, "[TERMINATE] Failed to delete deployed apps during termination")
 
     # ===== UPDATE DB: REFUND POINTS AND REMOVE USERNAME =====
     user_doc = users_col.find_one({"user_id": user_id})
@@ -2226,7 +2271,8 @@ async def terminate_execute_handler(event):
         elif not container_lines:
             container_summary = "\n\n<i>No active containers found.</i>"
 
-        await event.edit(
+        await safe_edit(
+            event,
             f"✅ <b>Subscription Cancelled</b>\n\n"
             f"User <code>@{username}</code> removed from all services.\n"
             f"Refunded: <b>{refund} Points</b>."
@@ -2235,7 +2281,8 @@ async def terminate_execute_handler(event):
             buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]]
         )
     else:
-        await event.edit(
+        await safe_edit(
+            event,
             "❌ Failed to delete user from all servers. Please contact support.",
             buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
         )
@@ -2425,11 +2472,13 @@ async def text_input_handler(event):
                 
             except Exception as e:
                 logger.exception("Failed to update DB entries after rename API success.")
+                await report_error_to_admin(e, "Failed to update DB entries after rename API success.")
             
             await event.respond(f"✅ Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.", parse_mode="html")
             
         except Exception as e:
             logger.exception("Rename process failed.")
+            await report_error_to_admin(e, "Rename process failed")
             await event.respond(f"❌ Error during rename: {e}", parse_mode="html")
         
         return
@@ -2493,10 +2542,7 @@ async def skip_session_token_handler(event):
         ],
     ]
     
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"confirm_username_no"))
 async def confirm_no_handler(event):
@@ -2514,10 +2560,8 @@ async def confirm_no_handler(event):
         "• <code>@alice123</code>\n\n"
         "Send only the username (no links)."
     )
-    try:
-        await event.edit(text, parse_mode="html")
-    except:
-        await event.respond(text, parse_mode="html")
+    
+    await safe_edit(event, text, parse_mode="html")
 
 @bot.on(events.CallbackQuery(data=b"confirm_username_yes"))
 async def confirm_yes_handler(event):
@@ -2539,8 +2583,9 @@ async def confirm_yes_handler(event):
 
     try:
         users_col.update_one({"user_id": user_id}, {"$set": {"username": username_clean}}, upsert=True)
-    except Exception:
+    except Exception as e:
         logger.exception("Failed to persist username to DB on confirm.")
+        await report_error_to_admin(e, "confirm_username_yes DB update")
 
     prod = session.get("product", "claimer")
     if prod == "api_claimer":
@@ -2562,10 +2607,8 @@ async def confirm_yes_handler(event):
             [Button.inline("❌ Cancel", b"back_to_start")]
         ]
         session["expecting_session_token"] = True
-        try:
-            await event.edit(text, parse_mode="html", buttons=buttons)
-        except:
-            await event.respond(text, parse_mode="html", buttons=buttons)
+        
+        await safe_edit(event, text, parse_mode="html", buttons=buttons)
         return
 
     # Standard flow for other products
@@ -2586,10 +2629,7 @@ async def confirm_yes_handler(event):
         ],
     ]
 
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"buy_upi"))
 async def buy_upi_handler(event):
@@ -2600,10 +2640,8 @@ async def buy_upi_handler(event):
         f"👉 <a href=\"{UPI_DM_LINK}\">@Rabit0505</a>"
     )
     buttons = [[Button.url("💬 DM for UPI Payment", UPI_DM_LINK)]]
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"buy_crypto"))
 async def buy_crypto_handler(event):
@@ -2653,10 +2691,7 @@ async def buy_crypto_handler(event):
 
     text += "\nSelect your plan:"
 
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(pattern=b"plan_"))
 async def plan_handler(event):
@@ -2716,10 +2751,7 @@ async def plan_handler(event):
 
     buttons.append([Button.inline("🔙 Back to Plans", b"buy_crypto")])
     
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"pay_method_points"))
 async def pay_points_handler(event):
@@ -2753,7 +2785,7 @@ async def pay_points_handler(event):
         
     users_col.update_one({"user_id": user_id}, {"$inc": {"points": -amount}})
     
-    await event.edit(f"🔄 Activating {prod_name} subscription...", parse_mode="html")
+    await safe_edit(event, f"🔄 Activating {prod_name} subscription...", parse_mode="html")
     
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
     
@@ -2847,6 +2879,7 @@ async def pay_points_handler(event):
                         pass
                 except Exception as e:
                     logger.exception(f"Forward error for {chat} msg {msg_id}: {e}")
+                    await report_error_to_admin(e, f"Forward error for {chat} msg {msg_id}")
     else:
         users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
         try:
@@ -2878,13 +2911,14 @@ async def pay_crypto_inv_handler(event):
         if not old.done():
             old.cancel()
 
-    await event.edit("🔄 Creating Invoice...", parse_mode="html")
+    await safe_edit(event, "🔄 Creating Invoice...", parse_mode="html")
 
     try:
         resp = await asyncio.to_thread(create_invoice, amount)
     except Exception as e:
         logger.exception(f"Invoice error: {e}")
-        return await event.edit("Failed to create invoice.")
+        await report_error_to_admin(e, "pay_crypto_inv_handler create_invoice")
+        return await safe_edit(event, "Failed to create invoice.")
 
     data = resp if isinstance(resp, dict) else {}
     track_id = None
@@ -2904,7 +2938,7 @@ async def pay_crypto_inv_handler(event):
 
     if not track_id or not pay_url:
         logger.error(f"Payment gateway returned unexpected response: {resp}")
-        return await event.edit("Payment gateway error.")
+        return await safe_edit(event, "Payment gateway error.")
 
     session["track_id"] = track_id
     
@@ -2923,10 +2957,8 @@ async def pay_crypto_inv_handler(event):
             Button.url("📢 Updates Channel", UPDATES_CHANNEL_LINK),
         ],
     ]
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
+    
+    await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
     task = asyncio.create_task(wait_for_payment(user_id, track_id, label, hours, amount))
     user_tasks[user_id] = task
@@ -2966,6 +2998,7 @@ async def broadcast_handler(event):
             total += 1
         except Exception as e:
             logger.error(f"Broadcast fail to {uid}: {e}")
+            await report_error_to_admin(e, f"Broadcast fail to {uid}")
 
     await event.reply(f"✅ Broadcast sent to {total} users.", parse_mode="html")
 
@@ -2978,6 +3011,7 @@ def main():
         loop.create_task(check_active_users_loop())
     except Exception as e:
         logger.exception(f"Failed to schedule background tasks: {e}")
+        sync_report_error_to_admin(e, "Failed to schedule background tasks")
 
     bot.run_until_disconnected()
 
