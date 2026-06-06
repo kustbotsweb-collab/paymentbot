@@ -611,12 +611,23 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
             if status == "paid":
                 
+                # Fetch tg_username in case we need it
+                try:
+                    sender = await bot.get_entity(user_id)
+                    tg_username = getattr(sender, 'username', None)
+                except:
+                    tg_username = None
+                
                 # === BULK POINTS PURCHASE ===
                 if is_bulk_points:
                     # Add points to user account
+                    update_data = {"$inc": {"points": points_amount}}
+                    if tg_username:
+                        update_data["$set"] = {"tg_username": tg_username}
+                        
                     users_col.update_one(
                         {"user_id": user_id},
-                        {"$inc": {"points": points_amount}},
+                        update_data,
                         upsert=True
                     )
                     
@@ -642,9 +653,15 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                 # Persist username to DB if not present
                 user_record = users_col.find_one({"user_id": user_id})
                 if user_record:
-                    users_col.update_one({"user_id": user_id}, {"$set": {"username": username_clean}})
+                    update_data = {"username": username_clean}
+                    if tg_username:
+                        update_data["tg_username"] = tg_username
+                    users_col.update_one({"user_id": user_id}, {"$set": update_data})
                 else:
-                    users_col.insert_one({"user_id": user_id, "username": username_clean, "points": 0.0})
+                    new_doc = {"user_id": user_id, "username": username_clean, "points": 0.0}
+                    if tg_username:
+                        new_doc["tg_username"] = tg_username
+                    users_col.insert_one(new_doc)
                     user_record = {"user_id": user_id}
 
                 # === REFERRAL REWARD SYSTEM ===
@@ -1256,6 +1273,51 @@ async def add_points_handler(event):
         await report_error_to_admin(e, "add_points_handler DB update")
         await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
 
+# ================== BALANCE COMMAND (OWNER ONLY) ==================
+
+@bot.on(events.NewMessage(pattern=r"^/(balance|b)(\s+.*)?$"))
+async def balance_handler(event):
+    sender = await event.get_sender()
+    is_rabit = getattr(sender, 'username', '').lower() == 'rabit0505'
+
+    if not is_rabit and event.sender_id != BOT_OWNER_ID:
+        return
+
+    args = event.message.message.split()
+    if len(args) != 2:
+        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Usage: `/balance <@username/userid>`", parse_mode="markdown")
+
+    target_arg = args[1]
+    user_record = None
+
+    if target_arg.isdigit():
+        target_user_id = int(target_arg)
+        user_record = users_col.find_one({"user_id": target_user_id})
+    else:
+        clean_username = target_arg.lstrip("@")
+        # Try searching by Stake username first
+        user_record = users_col.find_one({"username": clean_username})
+        # If not found, try searching by Telegram username
+        if not user_record:
+            user_record = users_col.find_one({"tg_username": clean_username})
+
+    if not user_record:
+        return await event.reply(f"![❌](tg://emoji?id=5273914604752216432) User `{target_arg}` not found in the database.", parse_mode="markdown")
+
+    points = user_record.get("points", 0.0)
+    stake_user = user_record.get("username", "Not Set")
+    tg_user = user_record.get("tg_username", "Not Set")
+    uid = user_record.get("user_id", "Unknown")
+
+    await event.reply(
+        f"💰 **User Balance Info**\n\n"
+        f"**User ID:** `{uid}`\n"
+        f"**Telegram:** `@{tg_user}`\n"
+        f"**Stake Username:** `{stake_user}`\n"
+        f"**Points Balance:** `{points:.2f}`",
+        parse_mode="markdown"
+    )
+
 # ================== API CLAIMER STATS COMMAND (OWNER ONLY) ==================
 
 @bot.on(events.NewMessage(pattern=r"^/apicstats$"))
@@ -1772,6 +1834,8 @@ async def bulk_pay_crypto_handler(event):
 @bot.on(events.NewMessage(pattern=r"^/start"))
 async def start_handler(event):
     user_id = event.sender_id
+    sender = await event.get_sender()
+    tg_username = getattr(sender, 'username', None)
     
     try:
         await bot(functions.messages.SendReactionRequest(
@@ -1803,6 +1867,7 @@ async def start_handler(event):
     if first_time:
         new_user_doc = {
             "user_id": user_id,
+            "tg_username": tg_username,
             "first_seen": datetime.now(timezone.utc),
             "points": 0.0
         }
@@ -1823,9 +1888,15 @@ async def start_handler(event):
 
         users_col.insert_one(new_user_doc)
     else:
+        update_data = {
+            "last_seen": datetime.now(timezone.utc)
+        }
+        if tg_username:
+            update_data["tg_username"] = tg_username
+            
         users_col.update_one(
             {"user_id": user_id},
-            {"$set": {"last_seen": datetime.now(timezone.utc)}}
+            {"$set": update_data}
         )
 
     caption_text = (
@@ -2568,6 +2639,9 @@ async def confirm_yes_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
+    
+    sender = await event.get_sender()
+    tg_username = getattr(sender, 'username', None)
 
     if not session:
         return await event.respond("Session expired. Restart with /start.")
@@ -2582,7 +2656,10 @@ async def confirm_yes_handler(event):
     session["expecting_username"] = False
 
     try:
-        users_col.update_one({"user_id": user_id}, {"$set": {"username": username_clean}}, upsert=True)
+        update_data = {"username": username_clean}
+        if tg_username:
+            update_data["tg_username"] = tg_username
+        users_col.update_one({"user_id": user_id}, {"$set": update_data}, upsert=True)
     except Exception as e:
         logger.exception("Failed to persist username to DB on confirm.")
         await report_error_to_admin(e, "confirm_username_yes DB update")
