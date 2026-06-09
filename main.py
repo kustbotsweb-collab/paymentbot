@@ -22,13 +22,13 @@ UPDATES_CHANNEL_LINK = "https://t.me/Rabit0505"
 UPI_DM_LINK = "https://t.me/Rabit0505"
 
 # --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth1-4df5f5b73886.herokuapp.com"
+CLAIMER_API_URL = "https://code-auth-f209eca8ad8a.herokuapp.com"
 # Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("rebateautomations", 2)  # 1st: the claimer file
 CLAIMER_FORWARD_2 = ("rebateautomations", 3)  # 2nd: setup video
 
 # --- API Claimer Assets ---
-API_CLAIMER_AUTH_URL = "https://code-auth1-4df5f5b73886.herokuapp.com"  # Same as Code Claimer auth
+API_CLAIMER_AUTH_URL = "https://code-auth-f209eca8ad8a.herokuapp.com"  # Same as Code Claimer auth
 
 # DEPLOY URLS (Load Distribution Pool)
 # The bot will deploy a single container using the first deployer that hasn't reached its limit.
