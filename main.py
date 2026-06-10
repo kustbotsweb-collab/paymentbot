@@ -22,22 +22,22 @@ UPDATES_CHANNEL_LINK = "https://t.me/Rabit0505"
 UPI_DM_LINK = "https://t.me/Rabit0505"
 
 # --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth-f209eca8ad8a.herokuapp.com"
+CLAIMER_API_URL = "https://chatauth.onrender.com"
 # Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("rebateautomations", 2)  # 1st: the claimer file
 CLAIMER_FORWARD_2 = ("rebateautomations", 3)  # 2nd: setup video
 
 # --- API Claimer Assets ---
-API_CLAIMER_AUTH_URL = "https://code-auth-f209eca8ad8a.herokuapp.com"  # Same as Code Claimer auth
+API_CLAIMER_AUTH_URL = "https://chatauth.onrender.com"  # Same as Code Claimer auth
 
 # DEPLOY URLS (Load Distribution Pool)
 # The bot will deploy a single container using the first deployer that hasn't reached its limit.
 API_CLAIMER_DEPLOYERS = [
     {
         "deploy_id": 1,
-        "url": "https://api-claimer-1-7d4b61900826.herokuapp.com",
+        "url": "https://api-claimer-deploy.onrender.com",
         "token": "fuck1234",
-        "limit": 95
+        "limit": 60
     },
     {
         "deploy_id": 2,
