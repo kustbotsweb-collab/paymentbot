@@ -18,7 +18,7 @@ UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
 UPI_DM_LINK = "https://t.me/KustXoffical"
 
 # --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth-843da34b0699.herokuapp.com"
+CLAIMER_API_URL = "https://code-auth-1-c604181235ea.herokuapp.com"
 # Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("kustvault", 5)
 CLAIMER_FORWARD_2 = ("kustvault", 6)
