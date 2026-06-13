@@ -43,7 +43,7 @@ API_CLAIMER_DEPLOYERS = [
         "deploy_id": 2,
         "url": "https://api-claimer-2-cfed7420dc82.herokuapp.com",
         "token": "fuck1234",
-        "limit": 99
+        "limit": 0
     },
     {
         "deploy_id": 3,
