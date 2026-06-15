@@ -93,13 +93,13 @@ REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 PLANS_LONG_TERM = {
     "2d":  {"label": "2 Days",      "amount": 4.5,  "hours": 48},
     "4d":  {"label": "4 Days",      "amount": 8.0,  "hours": 96},
-    "7d":  {"label": "7 Days",      "amount": 12.5, "hours": 168},
+    "7d":  {"label": "7 Days",      "amount": 9.5, "hours": 168},
 }
 # 1 Day definitions (Product dependent)
 # Code Claimer "1 Day" is now 12 Hours
 PLAN_1D_CLAIMER = {"label": "12 Hours", "amount": 2.5, "hours": 12}
 # Chat Farmer "1 Day" remains 24 Hours
-PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.5, "hours": 24}
+PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.0, "hours": 24}
 # API Claimer "1 Day" is 24 Hours
 PLAN_1D_API_CLAIMER = {"label": "1 Day", "amount": 3.0, "hours": 24}
 
