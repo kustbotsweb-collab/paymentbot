@@ -25,7 +25,7 @@ CLAIMER_FORWARD_2 = ("kustvault", 6)
 CLAIMER_FORWARD_3 = ("kustvault", 7)
 
 # --- Chat Farmer Assets ---
-FARMER_API_URL = "https://code-auth-1-c604181235ea.herokuapp.com"
+FARMER_API_URL = "https://free-gwendolyn-frozenbots-28495340.koyeb.app"
 # Forwards for Farmer (Using same vault for now, change if needed)
 FARMER_FORWARD_1 = ("kustvault", 2)
 FARMER_FORWARD_2 = ("kustvault", 3)
