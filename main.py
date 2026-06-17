@@ -327,25 +327,28 @@ def delete_deployed_app(app_name: str):
 def generate_unique_app_name(username: str, suffix_tag: str = ""):
     """
     Generate a unique app name based on username.
-    Format: api-cl-{username}
-    If taken, append random alphanumeric character.
+    Format: api-cl-{username}-{random}
+    Always appends a random string to prevent global Heroku collisions (Error 422).
     """
     # Clean username - remove @ and special characters
     clean_user = username.lstrip("@").lower()
-    clean_user = ''.join(c for c in clean_user if c.isalnum() or c == '_')
+    clean_user = ''.join(c for c in clean_user if c.isalnum() or c == '-')
     
-    # Limit length
+    # Limit length (Heroku max is 30 characters. 'api-cl-' + '-' + 4 random chars = 12. 30 - 12 = 18)
     if len(clean_user) > 18:
         clean_user = clean_user[:18]
     
-    base_name = f"api-cl-{clean_user}{suffix_tag}"
+    # ALWAYS append a random 4-character suffix to prevent global Heroku 422 errors
+    random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
     
-    # Check if base name exists
+    base_name = f"api-cl-{clean_user}-{random_suffix}{suffix_tag}"
+    
+    # Check if base name exists in our DB just to be absolutely safe
     existing = deployed_apps_col.find_one({"app_name": base_name})
     if not existing:
         return base_name
     
-    # If exists, append random character until unique
+    # If exists, append another random character until unique
     for _ in range(100):  # Max 100 attempts
         suffix = random.choice(string.ascii_lowercase + string.digits)
         candidate = f"{base_name}-{suffix}"
@@ -353,9 +356,9 @@ def generate_unique_app_name(username: str, suffix_tag: str = ""):
         if not existing:
             return candidate
     
-    # Fallback with random string
-    random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    return f"{base_name}-{random_suffix}"
+    # Fallback with another random string
+    fallback_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"{base_name}-{fallback_suffix}"
 
 def build_api_claimer_status_url(username: str):
     clean_user = username.lstrip("@").strip()
