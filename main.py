@@ -35,7 +35,7 @@ API_CLAIMER_AUTH_URL = "https://code-auth-dash-643e4005edaa.herokuapp.com"  # Sa
 API_CLAIMER_DEPLOYERS = [
     {
         "deploy_id": 1,
-        "url": "https://api-claimer-deploy1-a1a033817b5a.herokuapp.com",
+        "url": "https://api-deploy-1-909341678ce6.herokuapp.com",
         "token": "fuck1234",
         "limit": 0
     },
