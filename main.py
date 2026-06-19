@@ -3,9 +3,11 @@ import logging
 import time
 import requests
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button, functions, types
 from pymongo import MongoClient
+from aiohttp import web
 
 # ================== CONFIG ==================
 API_ID = 29568441
@@ -86,6 +88,21 @@ bot_username = None # Will be set on startup
 
 # keep track of reminders sent to avoid duplicates: { key: True }
 _reminder_sent = {}
+
+
+# ================== WEB SERVER (FOR RENDER) ==================
+async def handle_ping(request):
+    return web.Response(text="Bot is running!")
+
+async def web_server():
+    app = web.Application()
+    app.add_routes([web.get('/', handle_ping)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Web server started on port {port}")
 
 
 # ================== OXAPAY HELPERS ==================
@@ -1776,6 +1793,8 @@ def main():
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
+        # Start the Render Demo web server task here
+        loop.create_task(web_server())
     except Exception as e:
         logger.exception(f"Failed to schedule background tasks: {e}")
 
