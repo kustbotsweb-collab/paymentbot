@@ -2,8 +2,6 @@ import asyncio
 import logging
 import time
 import requests
-import random
-import string
 import json
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button, functions, types
@@ -17,52 +15,12 @@ SUPPORT_CHAT_LINK = "https://t.me/KustXoffical"
 UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
 UPI_DM_LINK = "https://t.me/KustXoffical"
 
-# --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth-1-c604181235ea.herokuapp.com"
-# Forwards for Claimer (Proof channels)
-CLAIMER_FORWARD_1 = ("kustvault", 5)
-CLAIMER_FORWARD_2 = ("kustvault", 6)
-CLAIMER_FORWARD_3 = ("kustvault", 7)
-
 # --- Chat Farmer Assets ---
 FARMER_API_URL = "https://free-gwendolyn-frozenbots-28495340.koyeb.app"
-# Forwards for Farmer (Using same vault for now, change if needed)
+# Forwards for Farmer
 FARMER_FORWARD_1 = ("kustvault", 2)
 FARMER_FORWARD_2 = ("kustvault", 3)
 FARMER_FORWARD_3 = ("kustvault", 4)
-
-# --- API Claimer Assets ---
-API_CLAIMER_AUTH_URL = "https://code-auth-1-c604181235ea.herokuapp.com"  # Same as Code Claimer auth
-
-# DUAL DEPLOY URLS (Batches for Load Distribution)
-# Per batch limit is 98. Once Batch 1 reaches 98 active containers, it routes to Batch 2.
-API_CLAIMER_BATCHES = [
-    {
-        "batch_id": 1,
-        "url_1": "https://api-claimer-deploy1-a1a033817b5a.herokuapp.com",   # Deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-2-db2d49c4887d.herokuapp.com",   # Deploy 2 (stake.pet)
-        "token": "fuck1234",
-        "limit": 80
-    },
-    {
-        "batch_id": 2,
-        "url_1": "https://api-claimer-3-aeab2d378e5b.herokuapp.com",             # CHANGE THIS - Batch 2 deploy 1 (stake.bet)
-        "url_2": "https://api-claimer-4-7b21e2a8515b.herokuapp.com",             # CHANGE THIS - Batch 2 deploy 2 (stake.pet)
-        "token": "fuck1234",                                                     # CHANGE THIS if batch 2 token differs
-        "limit": 0
-    }
-]
-
-API_CLAIMER_REGION = "eu"  # Deploy region
-
-# Mirror sites for dual deployment
-API_CLAIMER_MIRROR_SITE_1 = "stake.bet"
-API_CLAIMER_MIRROR_SITE_2 = "stake.pet"
-
-# Forwards for API Claimer (Using same vault, change if needed)
-API_CLAIMER_FORWARD_1 = ("kustvault", 8)
-API_CLAIMER_FORWARD_2 = ("kustvault", 9)
-API_CLAIMER_FORWARD_3 = ("kustvault", 10)
 
 # Start image
 START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c14bc87a40b4b6a9973"
@@ -72,10 +30,6 @@ MONGO_URL = "mongodb+srv://kustbotsweb_db_user:z7YqNFmFOvVHKl4B@kust-payments.hi
 mongo = MongoClient(MONGO_URL)
 db = mongo["kustchatbot"]
 users_col = db["users"]
-# Track deployed apps
-deployed_apps_col = db["deployed_apps"]
-# Track API subscriptions
-api_subscriptions_col = db["api_subscriptions"]
 
 # Bot owner
 BOT_OWNER_ID = 7618467489
@@ -88,35 +42,22 @@ OXAPAY_API_BASE = "https://api.oxapay.com"
 ACTIVE_USERS_POLL_INTERVAL = 60   # seconds between polls (1 minute)
 REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 
-# --- PRICING PLANS ---
+# --- PRICING PLANS (50% OFF) ---
 # Plans (Shared pricing for 2d+)
 PLANS_LONG_TERM = {
-    "2d":  {"label": "2 Days",      "amount": 4.5,  "hours": 48},
-    "4d":  {"label": "4 Days",      "amount": 8.0,  "hours": 96},
-    "7d":  {"label": "7 Days",      "amount": 9.5, "hours": 168},
+    "2d":  {"label": "2 Days",      "amount": 2.25,  "hours": 48},
+    "4d":  {"label": "4 Days",      "amount": 4.0,   "hours": 96},
+    "7d":  {"label": "7 Days",      "amount": 4.75,  "hours": 168},
 }
-# 1 Day definitions (Product dependent)
-# Code Claimer "1 Day" is now 12 Hours
-PLAN_1D_CLAIMER = {"label": "12 Hours", "amount": 2.5, "hours": 12}
-# Chat Farmer "1 Day" remains 24 Hours
-PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 2.0, "hours": 24}
-# API Claimer "1 Day" is 24 Hours
-PLAN_1D_API_CLAIMER = {"label": "1 Day", "amount": 3.0, "hours": 24}
+
+# 1 Day definitions
+PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 1.0, "hours": 24}
 
 # Plans (Exclusive to Chat Farmer Short Term)
 PLANS_FARMER_SHORT = {
-    "3h":  {"label": "3 Hours",     "amount": 0.5,  "hours": 3},
-    "6h":  {"label": "6 Hours",     "amount": 0.9,  "hours": 6},
-    "12h": {"label": "12 Hours",    "amount": 1.5,  "hours": 12},
-}
-
-# Plans (Exclusive to API Claimer)
-PLANS_API_CLAIMER = {
-    "1d":  {"label": "1 Day",    "amount": 5.0,  "hours": 12},
-    "3d":  {"label": "3 Days",   "amount": 7.5,  "hours": 72},
-    "7d":  {"label": "7 Days",   "amount": 10.0, "hours": 168},
-    "14d": {"label": "14 Days",  "amount": 18.0, "hours": 336},
-    "30d": {"label": "30 Days",  "amount": 30.0, "hours": 720},
+    "3h":  {"label": "3 Hours",     "amount": 0.25,  "hours": 3},
+    "6h":  {"label": "6 Hours",     "amount": 0.45,  "hours": 6},
+    "12h": {"label": "12 Hours",    "amount": 0.75,  "hours": 12},
 }
 
 # --- BULK POINTS PACKAGES ---
@@ -129,9 +70,7 @@ BULK_POINTS_PACKAGES = {
 }
 
 # --- REFUND CONFIGURATION ---
-REFUND_RATE_CLAIMER_PER_HOUR = 0.15 # Approx $0.15 per hour
-REFUND_RATE_FARMER_PER_HOUR = 0.08  # Approx $0.08 per hour
-REFUND_RATE_API_CLAIMER_PER_HOUR = 0.10  # Approx $0.10 per hour
+REFUND_RATE_FARMER_PER_HOUR = 0.04  # Reduced 50% to match new pricing
 
 PAYMENT_TIMEOUT = 15 * 60
 POLL_INTERVAL = 10
@@ -147,87 +86,6 @@ bot_username = None # Will be set on startup
 
 # keep track of reminders sent to avoid duplicates: { key: True }
 _reminder_sent = {}
-# Track expired cleanup to avoid duplicates: { key: True }
-_expired_cleanup_sent = {}
-# Track pre-expiry container deletion to avoid duplicates: { key: True }
-_pre_expiry_deletion_sent = {}
-
-
-# ================== BATCH MANAGEMENT ==================
-def get_available_batch():
-    """Find the first batch that hasn't reached its deployment limit."""
-    for batch in API_CLAIMER_BATCHES:
-        count = deployed_apps_col.count_documents({
-            "deploy_url": batch["url_1"],
-            "status": "active"
-        })
-        if count < batch["limit"]:
-            return batch
-    return None
-
-def get_batch_token(deploy_url):
-    """Get the auth token associated with a specific deploy URL."""
-    for b in API_CLAIMER_BATCHES:
-        if deploy_url in [b["url_1"], b["url_2"]]:
-            return b["token"]
-    return "fuck1234"  # Fallback
-
-# ================== ERROR MESSAGE HELPER ==================
-def get_user_friendly_deploy_error(error_data):
-    """
-    Check if the deployment error is due to app limit being reached.
-    Returns a user-friendly error message if so, otherwise returns the original error.
-    """
-    error_msg = ""
-    if isinstance(error_data, dict):
-        error_msg = error_data.get("message", error_data.get("error", ""))
-        if not error_msg:
-            error_msg = str(error_data)
-    else:
-        error_msg = str(error_data)
-        
-    # Check for Heroku app limit error
-    if "app limit" in error_msg.lower() or "reached your app limit" in error_msg.lower():
-        return "All slots are already full in this batch."
-        
-    # Check for 422 status with invalid_params
-    if "422" in error_msg and "invalid_params" in error_msg:
-        return "All slots are already full in this batch."
-        
-    # Return original error if not app limit
-    return error_msg if error_msg else "Unknown error"
-
-
-# ================== HEROKU HTTP ACTIONS ==================
-def restart_deployed_app(app_name, deploy_url, auth_token):
-    """Restart a specific container using the deploy API."""
-    url = f"{deploy_url}/apps/{app_name}/restart"
-    headers = {"Authorization": f"Bearer {auth_token}"}
-    try:
-        r = requests.post(url, headers=headers, timeout=30)
-        return r.status_code == 200
-    except Exception as e:
-        logger.error(f"[RESTART] Failed to restart {app_name} via {deploy_url}: {e}")
-        return False
-
-def update_deployed_app_config(app_name, deploy_url, auth_token, new_token):
-    """Update config vars for a container using the deploy API."""
-    url = f"{deploy_url}/apps/{app_name}/config-vars"
-    headers = {
-        "Authorization": f"Bearer {auth_token}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "config_vars": {
-            "SESSION_TOKEN": new_token
-        }
-    }
-    try:
-        r = requests.patch(url, headers=headers, json=payload, timeout=30)
-        return r.status_code == 200
-    except Exception as e:
-        logger.error(f"[CONFIG_UPDATE] Failed to update config for {app_name} via {deploy_url}: {e}")
-        return False
 
 
 # ================== OXAPAY HELPERS ==================
@@ -266,208 +124,19 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
         logger.exception(f"[ACTIVATE] Failed activation API for {username_with_at} on {api_url}: {e}")
         return False
 
-def delete_deployed_app(app_name: str):
-    """
-    Delete a deployed Heroku app/container via the deploy API.
-    Checks the DB to find the exact deploy_url, otherwise tries all known batches.
-    """
-    success_any = False
-    last_resp = {}
-    urls_to_try = []
-    
-    app_doc = deployed_apps_col.find_one({"app_name": app_name})
-
-    if app_doc and app_doc.get("deploy_url"):
-        target_url = app_doc["deploy_url"]
-        target_token = get_batch_token(target_url)
-        urls_to_try.append((target_url, target_token))
-    else:
-        # Fallback: try all urls in all batches
-        for b in API_CLAIMER_BATCHES:
-            urls_to_try.append((b["url_1"], b["token"]))
-            urls_to_try.append((b["url_2"], b["token"]))
-    
-    for deploy_url, auth_token in urls_to_try:
-        try:
-            url = f"{deploy_url}/apps/{app_name}"
-            headers = {
-                "Authorization": f"Bearer {auth_token}"
-            }
-            
-            logger.info(f"[DELETE_APP] Trying to delete container {app_name} via {deploy_url}")
-            
-            r = requests.delete(url, headers=headers, timeout=30)
-            
-            if r.status_code == 200:
-                logger.info(f"[DELETE_APP] Successfully deleted app: {app_name} via {deploy_url}")
-                success_any = True
-                last_resp = r.json()
-                break # Stop trying other URLs if successful
-            else:
-                response_text = r.text.lower()
-                if "not_found" in response_text or "\"id\":\"not_found\"" in response_text or "couldn't find that app" in response_text:
-                    logger.info(f"[DELETE_APP] App {app_name} already deleted (not found) via {deploy_url}")
-                    success_any = True
-                    last_resp = {"status": "already_deleted", "message": "App was already deleted"}
-                    break # It's gone, break out
-                else:
-                    logger.error(f"[DELETE_APP] Failed via {deploy_url}: {r.status_code} - {r.text}")
-                    last_resp = {"error": f"HTTP {r.status_code}: {r.text}"}
-                    
-        except Exception as e:
-            logger.exception(f"[DELETE_APP] Exception deleting app {app_name} via {deploy_url}: {e}")
-            last_resp = {"error": str(e)}
-            
-    return success_any, last_resp
-
-def generate_unique_app_name(username: str, suffix_tag: str = ""):
-    """
-    Generate a unique app name based on username.
-    Format: api-cl-{username} or api-cl-{username}-2 for the second deployment.
-    If taken, append random alphanumeric character.
-    suffix_tag: optional suffix like "-2" to differentiate dual deployments.
-    """
-    # Clean username - remove @ and special characters
-    clean_user = username.lstrip("@").lower()
-    clean_user = ''.join(c for c in clean_user if c.isalnum() or c == '_')
-    
-    # Limit length
-    if len(clean_user) > 18:
-        clean_user = clean_user[:18]
-        
-    base_name = f"api-cl-{clean_user}{suffix_tag}"
-    
-    # Check if base name exists
-    existing = deployed_apps_col.find_one({"app_name": base_name})
-    if not existing:
-        return base_name
-        
-    # If exists, append random character until unique
-    for _ in range(100):  # Max 100 attempts
-        suffix = random.choice(string.ascii_lowercase + string.digits)
-        candidate = f"{base_name}-{suffix}"
-        existing = deployed_apps_col.find_one({"app_name": candidate})
-        if not existing:
-            return candidate
-            
-    # Fallback with random string
-    random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    return f"{base_name}-{random_suffix}"
-
-def build_api_claimer_status_url(username: str):
-    clean_user = username.lstrip("@").strip()
-    return f"https://code-dash.kustbotsweb.workers.dev/api-cl?user={clean_user}"
-
-def deploy_api_container(session_token: str, app_name: str, deploy_url: str, auth_token: str, mirror_site: str, progress_callback=None):
-    """
-    Deploy API container for the user.
-    Calls the given deploy_url with the session token, app name, and mirror_site env var.
-    Returns SSE streaming response and parses the final status.
-    """
-    try:
-        url = f"{deploy_url}/deploy"
-        headers = {
-            "Authorization": f"Bearer {auth_token}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream"
-        }
-        
-        # MIRROR_SITE as top-level field alongside session_token and app_name
-        payload = {
-            "session_token": session_token,
-            "app_name": app_name,
-            "MIRROR_SITE": mirror_site
-        }
-        
-        logger.info(f"[DEPLOY] Deploying container: {app_name} via {deploy_url} (MIRROR_SITE={mirror_site})")
-        logger.info(f"[DEPLOY] Payload: session_token=***, app_name={app_name}, MIRROR_SITE={mirror_site}")
-        
-        # Use stream=True to handle SSE response. Increased timeout to 60 minutes (3600 seconds).
-        r = requests.post(url, headers=headers, json=payload, stream=True, timeout=3600)
-        
-        if r.status_code >= 400:
-            error_text = r.text
-            logger.error(f"[DEPLOY] Deploy failed with status {r.status_code}: {error_text}")
-            return False, {"error": f"HTTP {r.status_code}: {error_text}"}
-            
-        # Parse SSE stream
-        final_result = None
-        last_status = None
-        
-        for line in r.iter_lines(decode_unicode=True):
-            if not line:
-                continue
-                
-            line = line.strip()
-            
-            # SSE data lines start with "data: "
-            if line.startswith("data: "):
-                data_str = line[6:]  # Remove "data: " prefix
-                
-                try:
-                    data = json.loads(data_str)
-                    status = data.get("status", "")
-                    message = data.get("message", "")
-                    progress = data.get("progress", 0)
-                    
-                    logger.info(f"[DEPLOY] Status update: {status} - {message} ({progress}%)")
-                    
-                    if progress_callback:
-                        try:
-                            progress_callback(status, message, progress)
-                        except Exception as cb_error:
-                            logger.warning(f"[DEPLOY] Progress callback failed: {cb_error}")
-                            
-                    # Track the last status
-                    last_status = data
-                    
-                    # Check for final states
-                    if status == "completed":
-                        final_result = data
-                        logger.info(f"[DEPLOY] Deploy completed successfully for {app_name}")
-                        return True, data
-                    elif status == "error" or status == "build_failed" or status == "build_timeout":
-                        logger.error(f"[DEPLOY] Deploy failed: {message}")
-                        return False, data
-                        
-                except json.JSONDecodeError as e:
-                    logger.warning(f"[DEPLOY] Failed to parse SSE data: {data_str}")
-                    continue
-                    
-        # If we got here, check the last status
-        if last_status:
-            if last_status.get("status") == "completed":
-                return True, last_status
-            elif last_status.get("success") is True:
-                return True, last_status
-                
-        # No clear result
-        logger.warning(f"[DEPLOY] Stream ended without clear result for {app_name}")
-        return False, {"error": "Stream ended without completion status", "last_status": last_status}
-        
-    except requests.exceptions.Timeout:
-        logger.error(f"[DEPLOY] Deploy timeout for {app_name}")
-        return False, {"error": "Deployment timed out"}
-    except Exception as e:
-        logger.exception(f"[DEPLOY] Failed to deploy container {app_name}: {e}")
-        return False, {"error": str(e)}
-
 def extract_status_from_query_response(resp_json):
     if not resp_json:
         return None
-    # direct status field
     status = None
     if isinstance(resp_json, dict):
         status = resp_json.get("status")
         if status:
             return str(status).lower()
-        # sometimes nested
         data = resp_json.get("data") or resp_json.get("result") or resp_json.get("response")
         if isinstance(data, dict):
             s = data.get("status") or data.get("payment_status") or data.get("state")
             if s:
                 return str(s).lower()
-        # sometimes a list
         if isinstance(resp_json.get("data"), list) and len(resp_json.get("data")) > 0:
             el = resp_json.get("data")[0]
             if isinstance(el, dict):
@@ -476,164 +145,13 @@ def extract_status_from_query_response(resp_json):
                     return str(s).lower()
     return None
 
-# ================== DUAL DEPLOY PROGRESS ANIMATION ==================
-async def animate_dual_deploy_progress(user_id: int, username_clean: str, 
-                                       session_token_1: str, session_token_2: str):
-    """
-    Deploy TWO containers concurrently using an available batch.
-    Returns (app_name_1, result_1, app_name_2, result_2) with success flags + deploy parameters.
-    """
-    batch = get_available_batch()
-    if not batch:
-        msg = "❌ All deployment slots are currently full across all batches (Limit: 98 per batch). Please contact support to arrange availability."
-        await bot.send_message(user_id, msg)
-        return ("app_1", False, {"error": "All batches full"}, "app_2", False, {"error": "All batches full"}, "", "", "")
-
-    deploy_url_1 = batch["url_1"]
-    deploy_url_2 = batch["url_2"]
-    auth_token = batch["token"]
-
-    app_name_1 = generate_unique_app_name(username_clean, "")
-    app_name_2 = generate_unique_app_name(username_clean, "-2")
-
-    progress_state = {
-        1: {"message": "Starting...", "progress": 0, "done": False, "success": False, "result": {}},
-        2: {"message": "Starting...", "progress": 0, "done": False, "success": False, "result": {}},
-    }
-
-    # Send initial progress message
-    def render_text():
-        s1 = progress_state[1]
-        s2 = progress_state[2]
-        icon1 = "✅" if (s1["done"] and s1["success"]) else ("❌" if (s1["done"] and not s1["success"]) else "🔄")
-        icon2 = "✅" if (s2["done"] and s2["success"]) else ("❌" if (s2["done"] and not s2["success"]) else "🔄")
-
-        return (
-            f"🚀 <b>Deploying your API Claimer (Dual Mode)...</b>\n\n"
-            f"{icon1} <b>Container 1</b> — <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}]\n"
-            f"   Progress: <b>{s1['progress']}%</b> | {s1['message']}\n\n"
-            f"{icon2} <b>Container 2</b> — <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}]\n"
-            f"   Progress: <b>{s2['progress']}%</b> | {s2['message']}\n\n"
-            f"Region: <b>{API_CLAIMER_REGION.upper()}</b> | Batch: <b>#{batch['batch_id']}</b>"
-        )
-
-    progress_msg = await bot.send_message(user_id, render_text(), parse_mode="html")
-    last_rendered = None
-
-    def make_cb(idx):
-        def cb(status, message, progress):
-            progress_state[idx]["message"] = message or progress_state[idx]["message"]
-            if progress is not None:
-                progress_state[idx]["progress"] = progress
-        return cb
-
-    async def update_display(force=False):
-        nonlocal last_rendered
-        try:
-            key = (
-                progress_state[1]["progress"], progress_state[1]["message"],
-                progress_state[2]["progress"], progress_state[2]["message"],
-                progress_state[1]["done"], progress_state[2]["done"],
-            )
-            if not force and key == last_rendered:
-                return
-            await bot.edit_message(user_id, progress_msg.id, render_text(), parse_mode="html")
-            last_rendered = key
-        except Exception as e:
-            logger.warning(f"Failed to update dual deploy progress: {e}")
-
-    # Launch both deployments concurrently in threads
-    task1 = asyncio.create_task(
-        asyncio.to_thread(
-            deploy_api_container,
-            session_token_1, app_name_1, deploy_url_1, auth_token,
-            API_CLAIMER_MIRROR_SITE_1, make_cb(1)
-        )
-    )
-    task2 = asyncio.create_task(
-        asyncio.to_thread(
-            deploy_api_container,
-            session_token_2, app_name_2, deploy_url_2, auth_token,
-            API_CLAIMER_MIRROR_SITE_2, make_cb(2)
-        )
-    )
-
-    pending = {task1, task2}
-    task_map = {task1: 1, task2: 2}
-
-    while pending:
-        done_now, pending = await asyncio.wait(pending, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
-        for t in done_now:
-            idx = task_map[t]
-            try:
-                ok, res = t.result()
-            except Exception as e:
-                ok, res = False, {"error": str(e)}
-            
-            progress_state[idx]["done"] = True
-            progress_state[idx]["success"] = ok
-            progress_state[idx]["result"] = res
-            
-            if ok:
-                progress_state[idx]["progress"] = 100
-                progress_state[idx]["message"] = "Deployed successfully!"
-            else:
-                progress_state[idx]["message"] = get_user_friendly_deploy_error(res)
-        
-        await update_display()
-
-    # Final forced update
-    await update_display(force=True)
-
-    ok1 = progress_state[1]["success"]
-    res1 = progress_state[1]["result"]
-    ok2 = progress_state[2]["success"]
-    res2 = progress_state[2]["result"]
-
-    # Build final summary message
-    status_url = build_api_claimer_status_url(username_clean)
-    lines = [f"<b>🔧 Dual Deploy Summary (Batch #{batch['batch_id']})</b>\n"]
-    
-    if ok1:
-        lines.append(f"✅ <b>Container 1</b> — <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — Deployed!")
-    else:
-        err1 = get_user_friendly_deploy_error(res1)
-        lines.append(f"❌ <b>Container 1</b> — <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — {err1}")
-        
-    if ok2:
-        lines.append(f"✅ <b>Container 2</b> — <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — Deployed!")
-    else:
-        err2 = get_user_friendly_deploy_error(res2)
-        lines.append(f"❌ <b>Container 2</b> — <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — {err2}")
-
-    if ok1 or ok2:
-        lines.append("\n🎉 At least one container is live. Use the button to check your claim status.")
-    else:
-        lines.append("\nBoth deployments failed. Please contact support.")
-
-    buttons = [[Button.url("Check Live Claim Status", status_url)]] if (ok1 or ok2) else None
-    if not (ok1 or ok2):
-        buttons = [[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
-
-    try:
-        await bot.edit_message(
-            user_id, progress_msg.id,
-            "\n".join(lines),
-            parse_mode="html",
-            buttons=buttons
-        )
-    except Exception as e:
-        logger.warning(f"Failed to edit final dual deploy message: {e}")
-
-    return app_name_1, ok1, res1, app_name_2, ok2, res2, deploy_url_1, deploy_url_2, auth_token
-
 async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: int, plan_amount: float, is_bulk_points: bool = False, points_amount: int = 0):
     session = user_sessions.get(user_id)
     if not session:
         logger.warning(f"wait_for_payment: no session for {user_id}")
         return False
 
-    product_type = session.get("product", "claimer")
+    product_type = session.get("product", "farmer")
     
     # Handle bulk points purchase
     if is_bulk_points:
@@ -641,25 +159,15 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
         forwards = []
         api_url = None
     else:
-        # Configure variables based on product
-        if product_type == "farmer":
-            api_url = FARMER_API_URL
-            product_name = "Chat Farmer"
-            forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
-        elif product_type == "api_claimer":
-            api_url = API_CLAIMER_AUTH_URL
-            product_name = "API Claimer"
-            forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
-        else:
-            api_url = CLAIMER_API_URL
-            product_name = "Code Claimer"
-            forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
+        # Configure variables for farmer
+        api_url = FARMER_API_URL
+        product_name = "Chat Farmer"
+        forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
 
     start = time.time()
     while time.time() - start < PAYMENT_TIMEOUT:
         await asyncio.sleep(POLL_INTERVAL)
         try:
-            # run blocking network call in a thread
             data = await asyncio.to_thread(query_invoice, track_id)
             status = extract_status_from_query_response(data) or ""
             status = status.lower()
@@ -670,14 +178,12 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                 
                 # === BULK POINTS PURCHASE ===
                 if is_bulk_points:
-                    # Add points to user account
                     users_col.update_one(
                         {"user_id": user_id},
                         {"$inc": {"points": points_amount}},
                         upsert=True
                     )
                     
-                    # Get updated balance
                     user_record = users_col.find_one({"user_id": user_id})
                     new_balance = user_record.get("points", 0.0) if user_record else points_amount
                     
@@ -693,7 +199,6 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                 
                 username_clean = session.get("username", "UNKNOWN")
 
-                # call activation API in a background thread
                 activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
 
                 # Persist username to DB if not present
@@ -726,115 +231,14 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                     except Exception as e:
                         logger.error(f"Error processing referral reward: {e}")
 
-                # === API CLAIMER SPECIFIC: DUAL DEPLOY CONTAINERS ===
-                deploy_message = ""
-                deploy_buttons = None
-                
-                if product_type == "api_claimer":
-                    session_token_1 = session.get("session_token")
-                    session_token_2 = session.get("session_token_2")
-                    
-                    if session_token_1 and session_token_2:
-                        now_dt = datetime.now(timezone.utc)
-                        expires_at = now_dt + timedelta(hours=hours)
-                        
-                        deploy_result = await animate_dual_deploy_progress(
-                            user_id, username_clean, session_token_1, session_token_2
-                        )
-                        
-                        if len(deploy_result) == 9:
-                            app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
-                        else:
-                            app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
-                            dep_url_1, dep_url_2, auth_tok = "", "", ""
-                        
-                        # Save both containers to DB
-                        for (app_name, ok, res, mirror, deploy_url, tok) in [
-                            (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
-                            (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
-                        ]:
-                            web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
-                            
-                            deployed_apps_col.insert_one({
-                                "user_id": user_id,
-                                "username": username_clean,
-                                "app_name": app_name,
-                                "session_token": tok,
-                                "mirror_site": mirror,
-                                "deploy_url": deploy_url,
-                                "deployed_at": now_dt,
-                                "expires_at": expires_at,
-                                "status": "active" if ok else "deploy_failed",
-                                "web_url": web_url,
-                                "region": API_CLAIMER_REGION,
-                                "product_type": "api_claimer"
-                            })
-                            
-                        # Upsert api_subscriptions with both app names
-                        api_subscriptions_col.update_one(
-                            {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
-                            {
-                                "$set": {
-                                    "user_id": user_id,
-                                    "username": username_clean,
-                                    "product_type": "api_claimer",
-                                    "app_name_1": app_name_1,
-                                    "app_name_2": app_name_2,
-                                    "api_url": api_url,
-                                    "expires_at": expires_at,
-                                    "status": "active",
-                                    "session_token": session_token_1,
-                                    "session_token_2": session_token_2,
-                                    "updated_at": now_dt
-                                }
-                            },
-                            upsert=True
-                        )
-                        
-                        status_url = build_api_claimer_status_url(username_clean)
-                        
-                        if ok1 or ok2:
-                            deploy_buttons = [[Button.url("Check Live Claim Status", status_url)]]
-                            deploy_message = (
-                                f"\n\n✅ <b>Dual Containers Deployed!</b>\n"
-                                f"• <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — {'✅' if ok1 else '❌'}\n"
-                                f"• <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — {'✅' if ok2 else '❌'}\n"
-                                f"Region: <b>{API_CLAIMER_REGION.upper()}</b>"
-                            )
-                        else:
-                            err1 = get_user_friendly_deploy_error(res1)
-                            err2 = get_user_friendly_deploy_error(res2)
-                            deploy_message = (
-                                f"\n\n⚠️ <b>Both container deployments failed.</b>\n"
-                                f"• Container 1: {err1}\n"
-                                f"• Container 2: {err2}\n"
-                                f"Your subscription is active. Contact support."
-                            )
-                            deploy_buttons = [[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
-                            logger.error(f"Both deploys failed for user {user_id}")
-                            
-                    elif session_token_1:
-                        # Only one key provided
-                        deploy_message = (
-                            f"\n\n⚠️ <b>Second API key missing.</b>\n"
-                            f"Only one container can be deployed. Contact support to provide the second API key."
-                        )
-                    else:
-                        deploy_message = (
-                            f"\n\n⚠️ <b>API keys not found.</b>\n"
-                            f"Please contact support to deploy your containers manually."
-                        )
-
                 # Notify user
                 await bot.send_message(
                     user_id,
                     f"✅ Payment confirmed!\n\n"
                     f"Your <b>{product_name} - {plan_label}</b> subscription is activated.\n"
                     f"Stake Username: <code>@{username_clean}</code>\n"
-                    f"Duration: <b>{hours} hours</b>."
-                    f"{deploy_message}",
-                    parse_mode="html",
-                    buttons=deploy_buttons
+                    f"Duration: <b>{hours} hours</b>.",
+                    parse_mode="html"
                 )
 
                 # FORWARD + PIN
@@ -866,15 +270,11 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
         except Exception as e:
             logger.exception(f"Invoice query error for track {track_id}: {e}")
 
-    # timeout reached
     await bot.send_message(user_id, "⏳ Payment not confirmed. Create a new invoice.", parse_mode="html")
     return False
 
 # ================== API MANAGEMENT HELPERS ==================
 def get_active_users(api_url):
-    """
-    Call GET /active_users on the specific API.
-    """
     try:
         r = requests.get(f"{api_url}/active_users", timeout=20)
         r.raise_for_status()
@@ -884,11 +284,6 @@ def get_active_users(api_url):
         return None
 
 def rename_user_api(old_username: str, new_username: str):
-    """
-    Attempts to rename user on BOTH Claimer and Farmer APIs to ensure sync.
-    """
-    results = []
-    
     if old_username and not old_username.startswith("@"):
         old_username = f"@{old_username}"
     if new_username and not new_username.startswith("@"):
@@ -896,9 +291,7 @@ def rename_user_api(old_username: str, new_username: str):
         
     data = {"old_username": old_username, "new_username": new_username, "admin": "admin1234"}
     
-    # List of endpoints to update
     endpoints = [
-        f"{CLAIMER_API_URL}/rename_user",
         f"{FARMER_API_URL}/rename_user"
     ]
     
@@ -920,23 +313,18 @@ def rename_user_api(old_username: str, new_username: str):
         return {"ok": False, "error": details}
 
 def delete_user_api(username: str, api_url: str):
-    """
-    Deletes the user from the specified API using GET or POST /delete_user.
-    """
     if username and not username.startswith("@"):
         username = f"@{username}"
         
     params = {"username": username, "admin": "admin1234"}
     
     try:
-        # Trying POST
         r = requests.post(f"{api_url}/delete_user", params=params, timeout=10)
         r.raise_for_status()
         return True
     except Exception as e:
         logger.error(f"Failed delete_user POST on {api_url}: {e}")
         try:
-            # Fallback to GET
             r = requests.get(f"{api_url}/delete_user", params=params, timeout=10)
             r.raise_for_status()
             return True
@@ -945,7 +333,7 @@ def delete_user_api(username: str, api_url: str):
             
     return False
 
-# ================== ACTIVE USERS CHECKER (background) ==================
+# ================== ACTIVE USERS CHECKER ==================
 def _parse_iso_datetime(s: str):
     if not s:
         return None
@@ -957,7 +345,6 @@ def _parse_iso_datetime(s: str):
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         pass
-    # Try additional formats sometimes returned by APIs
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
         try:
             return datetime.strptime(s, fmt)
@@ -967,16 +354,11 @@ def _parse_iso_datetime(s: str):
     return None
 
 def _extract_active_users_list(data):
-    """
-    Robustly extract the list of active users from various API response formats.
-    Handles: {"active_users": [...]}, {"users": [...]}, {"data": [...]}, or direct list.
-    """
     if not data:
         return []
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        # Try common key names
         for key in ("active_users", "users", "data", "result", "results"):
             val = data.get(key)
             if isinstance(val, list):
@@ -985,21 +367,16 @@ def _extract_active_users_list(data):
 
 async def check_active_users_loop():
     await asyncio.sleep(5)
-    logger.info("Active users reminder loop started (60s interval, 10min reminder, auto-delete containers).")
+    logger.info("Active users reminder loop started (60s interval, 10min reminder).")
     
     api_sources = [
-        {"name": "Code Claimer", "url": CLAIMER_API_URL},
         {"name": "Chat Farmer",  "url": FARMER_API_URL},
-        {"name": "API Claimer",  "url": API_CLAIMER_AUTH_URL},
     ]
 
     while True:
         try:
             now = datetime.now(timezone.utc)
 
-            # ===================================================================
-            # PHASE 1: CHECK ACTIVE USERS FROM EACH API — REMINDERS + PRE-EXPIRY
-            # ===================================================================
             for source in api_sources:
                 api_name = source["name"]
                 api_url  = source["url"]
@@ -1011,15 +388,11 @@ async def check_active_users_loop():
                     continue
 
                 if not data:
-                    logger.debug(f"[REMINDER] No data returned from {api_name}")
                     continue
 
                 users = _extract_active_users_list(data)
                 if not users:
-                    logger.debug(f"[REMINDER] No active users found for {api_name}")
                     continue
-
-                logger.debug(f"[REMINDER] {api_name}: {len(users)} active user(s) to check")
 
                 for entry in users:
                     try:
@@ -1027,15 +400,12 @@ async def check_active_users_loop():
                         username    = entry.get("username") or entry.get("user") or entry.get("name")
 
                         if not expires_raw or not username:
-                            logger.debug(f"[REMINDER] Skipping entry missing expires/username: {entry}")
                             continue
 
                         expires_dt = _parse_iso_datetime(str(expires_raw))
                         if not expires_dt:
-                            logger.warning(f"[REMINDER] Could not parse expiry for {username}: {expires_raw!r}")
                             continue
 
-                        # Make timezone-aware
                         if expires_dt.tzinfo is None:
                             expires_dt = expires_dt.replace(tzinfo=timezone.utc)
 
@@ -1045,26 +415,17 @@ async def check_active_users_loop():
 
                         username_clean = username.lstrip("@").strip()
 
-                        # Fetch user_id from DB for DM
                         rec     = users_col.find_one({"username": username_clean})
                         user_id = rec.get("user_id") if rec else None
 
-                        # -------------------------------------------------------
-                        # REMINDER: send when <= 10 minutes left (and > 0 seconds)
-                        # Key is per-username + api + expiry so it fires once only
-                        # -------------------------------------------------------
                         if 0 < seconds_left <= (REMINDER_THRESHOLD_MINUTES * 60):
                             reminder_key = (
                                 f"reminder_{username_clean.lower()}"
                                 f"_{api_name}"
-                                f"_{expires_dt.strftime('%Y%m%d%H%M')}"  # minute-precision → stable key
+                                f"_{expires_dt.strftime('%Y%m%d%H%M')}"
                             )
 
                             if not _reminder_sent.get(reminder_key):
-                                logger.info(
-                                    f"[REMINDER] {api_name} — @{username_clean} — "
-                                    f"{minutes_left:.1f} min left — sending reminder"
-                                )
                                 if user_id:
                                     try:
                                         rem_text = (
@@ -1085,272 +446,19 @@ async def check_active_users_loop():
                                             parse_mode="html",
                                             buttons=buttons
                                         )
-                                        logger.info(
-                                            f"[REMINDER] ✅ Sent to user_id={user_id} "
-                                            f"(@{username_clean}) for {api_name}"
-                                        )
                                     except Exception as e:
-                                        logger.exception(
-                                            f"[REMINDER] ❌ Failed to send DM to {username_clean}: {e}"
-                                        )
-                                else:
-                                    logger.warning(
-                                        f"[REMINDER] @{username_clean} not found in DB — "
-                                        f"cannot send reminder for {api_name}"
-                                    )
+                                        logger.exception(f"[REMINDER] ❌ Failed to send DM to {username_clean}: {e}")
 
-                                # Mark as sent regardless so we don't retry every poll
                                 _reminder_sent[reminder_key] = True
-
-                        # -------------------------------------------------------
-                        # PRE-EXPIRY CONTAINER DELETION: only for API Claimer
-                        # -------------------------------------------------------
-                        if api_name == "API Claimer" and -300 < seconds_left <= 60:
-                            deployed_apps = list(deployed_apps_col.find({
-                                "username": username_clean,
-                                "status": "active"
-                            }))
-                            
-                            for deployed_app in deployed_apps:
-                                app_name = deployed_app.get("app_name")
-                                if not app_name:
-                                    continue
-                                    
-                                deletion_key = f"pre_expiry_{app_name}"
-                                if _pre_expiry_deletion_sent.get(deletion_key):
-                                    continue
-                                    
-                                logger.info(f"[PRE_EXPIRY_DELETE] Deleting container: {app_name}")
-                                delete_ok, delete_resp = await asyncio.to_thread(
-                                    delete_deployed_app, app_name
-                                )
-                                
-                                if delete_ok:
-                                    deployed_apps_col.update_one(
-                                        {"app_name": app_name},
-                                        {"$set": {
-                                            "status": "expired_deleted",
-                                            "deleted_at": now,
-                                            "deletion_reason": "subscription_expired"
-                                        }}
-                                    )
-                                    api_subscriptions_col.update_many(
-                                        {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
-                                        {"$set": {
-                                            "status": "expired_deleted",
-                                            "deleted_at": now,
-                                            "deletion_reason": "subscription_expired"
-                                        }}
-                                    )
-                                    logger.info(f"[PRE_EXPIRY_DELETE] ✅ Deleted container: {app_name}")
-                                else:
-                                    logger.error(
-                                        f"[PRE_EXPIRY_DELETE] ❌ Failed to delete {app_name}: {delete_resp}"
-                                    )
-                                    
-                                _pre_expiry_deletion_sent[deletion_key] = True
-                                
-                            # One expiry notification per user (after all containers processed)
-                            notify_key = (
-                                f"expiry_notify_{username_clean}"
-                                f"_{expires_dt.strftime('%Y%m%d%H%M')}"
-                            )
-                            
-                            if not _pre_expiry_deletion_sent.get(notify_key) and deployed_apps:
-                                notify_user_id = deployed_apps[0].get("user_id") or user_id
-                                if notify_user_id:
-                                    try:
-                                        await bot.send_message(
-                                            notify_user_id,
-                                            f"⏰ <b>Subscription Expired</b>\n\n"
-                                            f"Your API Claimer subscription has expired.\n"
-                                            f"All containers have been automatically stopped.\n\n"
-                                            f"Renew to get new containers deployed.",
-                                            parse_mode="html",
-                                            buttons=[
-                                                [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
-                                                [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
-                                            ]
-                                        )
-                                    except Exception as e:
-                                        logger.error(
-                                            f"[PRE_EXPIRY] Failed to notify {notify_user_id}: {e}"
-                                        )
-                                _pre_expiry_deletion_sent[notify_key] = True
 
                     except Exception as ee:
                         logger.exception(f"[REMINDER] Error processing active user entry: {ee}")
-
-            # ===================================================================
-            # PHASE 2: DB FALLBACK — clean up expired containers from database
-            # ===================================================================
-            try:
-                active_containers = list(deployed_apps_col.find({"status": "active"}))
-                for container in active_containers:
-                    try:
-                        app_name         = container.get("app_name")
-                        username         = container.get("username")
-                        container_uid    = container.get("user_id")
-                        expires_at       = container.get("expires_at")
-                        
-                        if not app_name or not expires_at:
-                            continue
-                            
-                        if isinstance(expires_at, str):
-                            expires_at = _parse_iso_datetime(expires_at)
-                            
-                        if not expires_at:
-                            continue
-                            
-                        if expires_at.tzinfo is None:
-                            expires_at = expires_at.replace(tzinfo=timezone.utc)
-                            
-                        seconds_left = (expires_at - now).total_seconds()
-                        
-                        if seconds_left <= 60:
-                            deletion_key = f"db_cleanup_{app_name}"
-                            if _expired_cleanup_sent.get(deletion_key):
-                                continue
-                                
-                            logger.info(
-                                f"[DB_CLEANUP] Found expired/soon-to-expire container: "
-                                f"{app_name} for @{username}"
-                            )
-                            
-                            delete_ok, delete_resp = await asyncio.to_thread(
-                                delete_deployed_app, app_name
-                            )
-                            
-                            if delete_ok:
-                                deployed_apps_col.update_one(
-                                    {"app_name": app_name},
-                                    {"$set": {
-                                        "status": "expired_deleted",
-                                        "deleted_at": now,
-                                        "deletion_reason": "subscription_expired"
-                                    }}
-                                )
-                                api_subscriptions_col.update_many(
-                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
-                                    {"$set": {
-                                        "status": "expired_deleted",
-                                        "deleted_at": now,
-                                        "deletion_reason": "subscription_expired"
-                                    }}
-                                )
-                                
-                                if container_uid:
-                                    try:
-                                        await bot.send_message(
-                                            container_uid,
-                                            f"⏰ <b>Subscription Expired</b>\n\n"
-                                            f"Your API Claimer subscription has expired.\n"
-                                            f"Container <code>{app_name}</code> has been automatically stopped.\n\n"
-                                            f"Renew to get new containers deployed.",
-                                            parse_mode="html",
-                                            buttons=[
-                                                [Button.inline("💳 Renew Now", b"buy_product_api_claimer")],
-                                                [Button.url("🛠 Support", SUPPORT_CHAT_LINK)]
-                                            ]
-                                        )
-                                    except Exception as e:
-                                        logger.error(
-                                            f"[DB_CLEANUP] Failed to notify {container_uid}: {e}"
-                                        )
-                                        
-                            logger.info(f"[DB_CLEANUP] ✅ Deleted container: {app_name}")
-                        else:
-                            logger.error(
-                                f"[DB_CLEANUP] ❌ Failed to delete {app_name}: {delete_resp}"
-                            )
-                            
-                        _expired_cleanup_sent[deletion_key] = True
-                            
-                    except Exception as e:
-                        logger.exception(f"[DB_CLEANUP] Error processing container: {e}")
-                        
-            except Exception as e:
-                logger.exception(f"[DB_CLEANUP] Phase 2 error: {e}")
 
         except Exception as e:
             logger.exception(f"check_active_users_loop top-level error: {e}")
 
         await asyncio.sleep(ACTIVE_USERS_POLL_INTERVAL)
 
-async def sync_db_with_api_loop():
-    await asyncio.sleep(15)  # Offset slightly from the other loop
-    logger.info("Starting 30-min API sync loop to clear inactive DB entries...")
-    
-    api_sources = {
-        "api_claimer": API_CLAIMER_AUTH_URL,
-        "claimer": CLAIMER_API_URL,
-        "farmer": FARMER_API_URL
-    }
-    
-    while True:
-        try:
-            logger.info("[SYNC] Running 30-min sync to clear inactive DB entries...")
-            now = datetime.now(timezone.utc)
-            
-            # Fetch active users from APIs
-            active_users_by_product = {}
-            for prod, url in api_sources.items():
-                try:
-                    data = await asyncio.to_thread(get_active_users, url)
-                    users = _extract_active_users_list(data)
-                    active_usernames = set()
-                    for u in users:
-                        un = u.get("username") or u.get("user") or u.get("name")
-                        if un:
-                            active_usernames.add(un.lstrip("@").lower())
-                    active_users_by_product[prod] = active_usernames
-                except Exception as e:
-                    logger.error(f"[SYNC] Failed to fetch active users for {prod}: {e}")
-                    active_users_by_product[prod] = None # Mark as failed so we don't accidentally delete
-                    
-            # Check deployed_apps_col (API Claimer specific)
-            active_containers = list(deployed_apps_col.find({"status": "active"}))
-            
-            for container in active_containers:
-                username = container.get("username", "").lower()
-                app_name = container.get("app_name")
-                prod_type = container.get("product_type", "api_claimer")
-                
-                api_active_list = active_users_by_product.get(prod_type)
-                
-                # If API fetch failed, skip to be safe
-                if api_active_list is None:
-                    continue
-                    
-                # If username is NOT in the API's active list
-                if username and username not in api_active_list:
-                    logger.info(f"[SYNC] Container {app_name} for @{username} not found on {prod_type} API. Terminating...")
-                    
-                    if app_name:
-                        delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                        
-                        deployed_apps_col.update_one(
-                            {"app_name": app_name},
-                            {"$set": {
-                                "status": "terminated_sync",
-                                "terminated_at": now,
-                                "deletion_reason": "api_sync_not_found"
-                            }}
-                        )
-                        api_subscriptions_col.update_many(
-                            {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
-                            {"$set": {
-                                "status": "terminated_sync",
-                                "terminated_at": now,
-                                "deletion_reason": "api_sync_not_found"
-                            }}
-                        )
-                        logger.info(f"[SYNC] Deleted container {app_name}: {'ok' if delete_ok else 'failed'}")
-                    
-        except Exception as e:
-            logger.exception(f"[SYNC] Error in sync_db_with_api_loop: {e}")
-            
-        await asyncio.sleep(30 * 60)  # 30 minutes
 
 # ================== ADD POINTS COMMAND ==================
 @bot.on(events.NewMessage(pattern=r"^/add\s"))
@@ -1413,161 +521,6 @@ async def add_points_handler(event):
         logger.error(f"Error adding points: {e}")
         await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
 
-# ================== API CLAIMER STATS COMMAND (OWNER ONLY) ==================
-@bot.on(events.NewMessage(pattern=r"^/apicstats$"))
-async def apicstats_handler(event):
-    if event.sender_id != BOT_OWNER_ID:
-        return
-        
-    await event.reply("📊 <b>Fetching API Claimer Stats...</b>", parse_mode="html")
-    now = datetime.now(timezone.utc)
-    
-    api_data = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
-    
-    api_users = []
-    if api_data and isinstance(api_data, dict):
-        api_users = _extract_active_users_list(api_data)
-        
-    db_containers = list(deployed_apps_col.find({"product_type": "api_claimer"}))
-    
-    total_api_users = len(api_users)
-    total_db_containers = len(db_containers)
-    active_containers = len([c for c in db_containers if c.get("status") == "active"])
-    expired_containers = len([c for c in db_containers if c.get("status") in ["expired_deleted", "terminated"]])
-    
-    report_lines = []
-    report_lines.append("<b>📊 API CLAIMER STATS (Dual Deploy)</b>")
-    report_lines.append(f"📅 <i>Generated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}</i>")
-    report_lines.append("")
-    report_lines.append(f"<b>📈 Summary:</b>")
-    report_lines.append(f"• Active on API: <b>{total_api_users}</b>")
-    report_lines.append(f"• Total Containers in DB: <b>{total_db_containers}</b>")
-    report_lines.append(f"• Active Containers: <b>{active_containers}</b>")
-    report_lines.append(f"• Expired/Terminated: <b>{expired_containers}</b>")
-    report_lines.append("")
-    report_lines.append("<b>👥 Active Users (from API):</b>")
-    report_lines.append("━━━━━━━━━━━━━━━━━━━━")
-    
-    if not api_users:
-        report_lines.append("<i>No active users found on API.</i>")
-    else:
-        for idx, user in enumerate(api_users, 1):
-            username = user.get("username", "Unknown")
-            expires_raw = user.get("expires")
-            
-            if expires_raw:
-                expires_dt = _parse_iso_datetime(str(expires_raw))
-                if expires_dt:
-                    if expires_dt.tzinfo is None:
-                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-                    
-                    time_left = expires_dt - now
-                    total_seconds = time_left.total_seconds()
-                    
-                    if total_seconds > 0:
-                        hours_left = total_seconds / 3600
-                        if hours_left >= 24:
-                            time_str = f"{hours_left/24:.1f} days"
-                        elif hours_left >= 1:
-                            time_str = f"{hours_left:.1f} hours"
-                        else:
-                            time_str = f"{total_seconds/60:.0f} mins"
-                        status_emoji = "🟢"
-                    else:
-                        time_str = "EXPIRED"
-                        status_emoji = "🔴"
-                    
-                    expires_str = expires_dt.strftime('%Y-%m-%d %H:%M UTC')
-            else:
-                time_str = "N/A"
-                expires_str = "Invalid date"
-                status_emoji = "⚪"
-        else:
-            time_str = "N/A"
-            expires_str = "No expiry"
-            status_emoji = "⚪"
-            
-            clean_username = username.lstrip("@") if username else ""
-            
-            # Find both containers for this user (dual deploy)
-            containers = list(deployed_apps_col.find({"username": clean_username, "product_type": "api_claimer"}))
-            container_info = ""
-            for c in containers:
-                c_status = c.get("status", "unknown")
-                c_name = c.get("app_name", "N/A")
-                c_mirror = c.get("mirror_site", "?")
-                icon = "📦" if c_status == "active" else "📭"
-                container_info += f"\n   {icon} {c_name} [{c_mirror}] ({c_status})"
-            
-            report_lines.append(f"{status_emoji} <code>@{clean_username}</code>")
-            report_lines.append(f"   ⏱ {time_str} left | Expires: {expires_str}{container_info}")
-            
-    api_usernames = set(u.get("username", "").lower().lstrip("@") for u in api_users)
-    
-    db_only_containers = []
-    for container in db_containers:
-        container_username = container.get("username", "").lower()
-        if container_username not in api_usernames and container.get("status") == "active":
-            db_only_containers.append(container)
-            
-    if db_only_containers:
-        report_lines.append("")
-        report_lines.append("<b>📦 DB Containers (Not in API):</b>")
-        report_lines.append("━━━━━━━━━━━━━━━━━━━━")
-        for container in db_only_containers:
-            app_name = container.get("app_name", "N/A")
-            username = container.get("username", "Unknown")
-            status = container.get("status", "unknown")
-            mirror = container.get("mirror_site", "?")
-            deployed_at = container.get("deployed_at")
-            expires_at = container.get("expires_at")
-            
-            deployed_str = deployed_at.strftime('%Y-%m-%d') if deployed_at else "N/A"
-            expires_str = expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else "N/A"
-            
-            if expires_at:
-                if isinstance(expires_at, str):
-                    expires_at = _parse_iso_datetime(expires_at)
-                if expires_at:
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
-                    time_left = expires_at - now
-                    total_seconds = time_left.total_seconds()
-                    status_emoji = "🟡" if total_seconds > 0 else "🔴"
-                else:
-                    status_emoji = "⚪"
-            else:
-                status_emoji = "⚪"
-            
-            report_lines.append(f"{status_emoji} <code>@{username}</code>")
-            report_lines.append(f"   📦 {app_name} [{mirror}] | Status: {status}")
-            report_lines.append(f"   Deployed: {deployed_str} | Expires: {expires_str}")
-            
-    full_report = "\n".join(report_lines)
-    
-    if len(full_report) <= 4096:
-        await event.reply(full_report, parse_mode="html")
-    else:
-        chunks = []
-        current_chunk = ""
-        for line in report_lines:
-            if len(current_chunk) + len(line) + 1 > 4000:
-                chunks.append(current_chunk)
-                current_chunk = line
-            else:
-                if current_chunk:
-                    current_chunk += "\n" + line
-                else:
-                    current_chunk = line
-        if current_chunk:
-            chunks.append(current_chunk)
-            
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                await event.reply(chunk, parse_mode="html")
-            else:
-                await event.reply(f"<b>📊 API Claimer Stats (continued)</b>\n\n{chunk}", parse_mode="html")
-
 # ================== EXTEND TIME COMMAND (OWNER ONLY) ==================
 @bot.on(events.NewMessage(pattern=r"^/extend\s"))
 async def extend_time_handler(event):
@@ -1578,20 +531,14 @@ async def extend_time_handler(event):
     
     if len(args) < 3:
         return await event.reply(
-            "❌ <b>Usage:</b> <code>/extend &lt;username/userid&gt; &lt;hours&gt; [product]</code>\n\n"
-            "<b>Products:</b> <code>claimer</code>, <code>farmer</code>, <code>api_claimer</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/extend @alice123 24 claimer</code>\n"
-            "<code>/extend @alice123 48 farmer</code>\n"
-            "<code>/extend @alice123 72 api_claimer</code>\n"
-            "<code>/extend 123456789 24 claimer</code>\n\n"
-            "<i>If product not specified, extends on all active products.</i>",
+            "❌ <b>Usage:</b> <code>/extend &lt;username/userid&gt; &lt;hours&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/extend @alice123 24</code>\n",
             parse_mode="html"
         )
         
     target_arg = args[1]
     hours_arg = args[2]
-    product_arg = args[3].lower() if len(args) > 3 else None
     
     try:
         hours_to_add = int(hours_arg)
@@ -1599,10 +546,6 @@ async def extend_time_handler(event):
             raise ValueError("Hours must be positive")
     except ValueError:
         return await event.reply("❌ Invalid hours. Please enter a positive number.", parse_mode="html")
-        
-    valid_products = ["claimer", "farmer", "api_claimer"]
-    if product_arg and product_arg not in valid_products:
-        return await event.reply(f"❌ Invalid product. Valid options: {', '.join(valid_products)}", parse_mode="html")
         
     target_user_id = None
     target_username = None
@@ -1623,62 +566,20 @@ async def extend_time_handler(event):
     status_msg = await event.reply(f"🔄 Extending subscription for <code>@{target_username}</code>...", parse_mode="html")
     
     results = []
-    products_to_extend = [product_arg] if product_arg else valid_products
-    
-    for product in products_to_extend:
-        if product == "claimer":
-            api_url = CLAIMER_API_URL
-            product_name = "Code Claimer"
-        elif product == "farmer":
-            api_url = FARMER_API_URL
-            product_name = "Chat Farmer"
-        elif product == "api_claimer":
-            api_url = API_CLAIMER_AUTH_URL
-            product_name = "API Claimer"
+    product_name = "Chat Farmer"
+    api_url = FARMER_API_URL
+        
+    try:
+        success = await asyncio.to_thread(activate_subscription, f"@{target_username}", hours_to_add, api_url)
+        
+        if success:
+            results.append(f"✅ <b>{product_name}</b>: Extended by {hours_to_add} hours")
         else:
-            continue
+            results.append(f"❌ <b>{product_name}</b>: Failed to extend")
             
-        try:
-            success = await asyncio.to_thread(activate_subscription, f"@{target_username}", hours_to_add, api_url)
-            
-            if success:
-                results.append(f"✅ <b>{product_name}</b>: Extended by {hours_to_add} hours")
-                
-                if product == "api_claimer":
-                    # Update ALL active containers for this user (dual deploy = 2)
-                    containers = list(deployed_apps_col.find({"username": target_username, "status": "active"}))
-                    for container in containers:
-                        current_expires = container.get("expires_at")
-                        if current_expires:
-                            if isinstance(current_expires, str):
-                                current_expires = _parse_iso_datetime(current_expires)
-                            if current_expires:
-                                if current_expires.tzinfo is None:
-                                    current_expires = current_expires.replace(tzinfo=timezone.utc)
-                                now = datetime.now(timezone.utc)
-                                if current_expires > now:
-                                    new_expires = current_expires + timedelta(hours=hours_to_add)
-                                else:
-                                    new_expires = now + timedelta(hours=hours_to_add)
-                                    
-                                app_name = container.get("app_name")
-                                mirror = container.get("mirror_site", "?")
-                                
-                                deployed_apps_col.update_one(
-                                    {"app_name": app_name},
-                                    {"$set": {"expires_at": new_expires}}
-                                )
-                                api_subscriptions_col.update_many(
-                                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
-                                    {"$set": {"expires_at": new_expires}}
-                                )
-                                results.append(f"   📦 Container <code>{app_name}</code> [{mirror}] updated to: {new_expires.strftime('%Y-%m-%d %H:%M UTC')}")
-            else:
-                results.append(f"❌ <b>{product_name}</b>: Failed to extend")
-                
-        except Exception as e:
-            logger.exception(f"Error extending {product_name} for {target_username}: {e}")
-            results.append(f"❌ <b>{product_name}</b>: Error - {str(e)[:50]}")
+    except Exception as e:
+        logger.exception(f"Error extending {product_name} for {target_username}: {e}")
+        results.append(f"❌ <b>{product_name}</b>: Error - {str(e)[:50]}")
             
     result_text = (
         f"⏰ <b>Subscription Extension Result</b>\n\n"
@@ -1689,8 +590,7 @@ async def extend_time_handler(event):
     
     if target_user_id:
         try:
-            api_data = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL if product_arg == "api_claimer" else 
-                                                (FARMER_API_URL if product_arg == "farmer" else CLAIMER_API_URL))
+            api_data = await asyncio.to_thread(get_active_users, FARMER_API_URL)
             new_expiry_str = "N/A"
             if api_data and isinstance(api_data, dict):
                 for u in _extract_active_users_list(api_data):
@@ -1998,16 +898,12 @@ async def start_handler(event):
     caption_text = (
         "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
-        "• Code Claimer (High-speed claiming)\n"
-        "• Chat Farmer (Automated chat farming)\n"
-        "• API Claimer (Dedicated API container)\n\n"
+        "• Chat Farmer (Automated chat farming)\n\n"
         "Select a product to purchase or manage your account."
     )
 
     buttons = []
-    buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
     buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
-    buttons.append([Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")])
 
     if existing:
         buttons.append([Button.inline("⚙️ Manage Subscriptions", b"manage_subs_menu")])
@@ -2049,166 +945,12 @@ async def show_management_menu(event_or_msg, user_id):
     buttons = [
         [Button.inline("✏️ Edit Username", b"edit_username")],
         [Button.inline("🗑 Terminate Sub", b"terminate_sub_menu")],
-        [Button.inline("🔌 Edit API Keys", b"manage_edit_api")],
-        [Button.inline("🔄 Restart Containers", b"manage_restart")],
         [Button.inline("🔙 Main Menu", b"back_to_start")]
     ]
     if hasattr(event_or_msg, 'edit'):
         await event_or_msg.edit(text, parse_mode="markdown", buttons=buttons)
     else:
         await bot.send_message(user_id, text, parse_mode="markdown", buttons=buttons)
-
-@bot.on(events.CallbackQuery(data=b"manage_restart"))
-async def manage_restart_list(event):
-    await event.answer()
-    user_id = event.sender_id
-    unames = deployed_apps_col.distinct("username", {"user_id": user_id, "status": "active", "product_type": "api_claimer"})
-    
-    if not unames:
-        return await event.edit(
-            "❌ You have no active API Claimer containers to restart.",
-            buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]]
-        )
-        
-    buttons = [[Button.inline(f"@{u}", f"do_restart_{u}".encode())] for u in unames]
-    buttons.append([Button.inline("🔙 Back", b"manage_subs_menu")])
-    await event.edit("🔄 Select the username to restart its containers:", buttons=buttons)
-
-@bot.on(events.CallbackQuery(pattern=b"do_restart_"))
-async def do_restart_cb(event):
-    await event.answer()
-    uname = event.data.decode().replace("do_restart_", "")
-    user_id = event.sender_id
-    
-    await event.edit(f"🔄 Restarting containers for `@{uname}`...", parse_mode="markdown")
-    
-    apps = list(deployed_apps_col.find({"user_id": user_id, "username": uname, "status": "active"}))
-    if not apps:
-        return await event.edit(
-            "❌ No active containers found.",
-            buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]]
-        )
-        
-    results = []
-    for app in apps:
-        app_name = app.get("app_name")
-        deploy_url = app.get("deploy_url")
-        auth_token = get_batch_token(deploy_url)
-        
-        ok = await asyncio.to_thread(restart_deployed_app, app_name, deploy_url, auth_token)
-        if ok:
-            results.append(f"✅ {app_name} restarted.")
-        else:
-            results.append(f"❌ {app_name} failed to restart.")
-            
-    txt = "<b>🔄 Restart Result</b>\n\n" + "\n".join(results)
-    await event.edit(txt, parse_mode="html", buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]])
-
-@bot.on(events.CallbackQuery(data=b"manage_edit_api"))
-async def manage_edit_api_list(event):
-    await event.answer()
-    user_id = event.sender_id
-    unames = deployed_apps_col.distinct("username", {"user_id": user_id, "status": "active", "product_type": "api_claimer"})
-    
-    if not unames:
-        return await event.edit(
-            "❌ You have no active API Claimer containers to edit.",
-            buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]]
-        )
-        
-    buttons = [[Button.inline(f"@{u}", f"do_editapi_{u}".encode())] for u in unames]
-    buttons.append([Button.inline("🔙 Back", b"manage_subs_menu")])
-    await event.edit("🔌 Select the username to edit its API keys:", buttons=buttons)
-    
-@bot.on(events.CallbackQuery(pattern=b"do_editapi_"))
-async def do_editapi_cb(event):
-    await event.answer()
-    uname = event.data.decode().replace("do_editapi_", "")
-    user_id = event.sender_id
-    session = user_sessions.setdefault(user_id, {})
-    session["edit_api_uname"] = uname
-    session["expecting_edit_api_1"] = True
-    
-    await event.edit(
-        f"🔌 **Edit API Keys for @{uname}**\n\nPlease send the NEW first API key (for Container 1):",
-        parse_mode="markdown",
-        buttons=[[Button.inline("❌ Cancel", b"manage_subs_menu")]]
-    )
-
-@bot.on(events.CallbackQuery(data=b"edit_api_use_same"))
-async def edit_api_use_same_cb(event):
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.get(user_id, {})
-    session["expecting_edit_api_2"] = False
-    session["edit_api_key_2"] = session.get("edit_api_key_1")
-    await event.edit("🔄 Processing API key update...")
-    await process_edit_api_keys(event, user_id, session)
-
-@bot.on(events.CallbackQuery(data=b"edit_api_skip_2"))
-async def edit_api_skip_2_cb(event):
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.get(user_id, {})
-    session["expecting_edit_api_2"] = False
-    session["edit_api_key_2"] = None # Means don't update
-    await event.edit("🔄 Processing API key update...")
-    await process_edit_api_keys(event, user_id, session)
-
-async def process_edit_api_keys(event_or_msg, user_id, session):
-    uname = session.get("edit_api_uname")
-    k1 = session.get("edit_api_key_1")
-    k2 = session.get("edit_api_key_2")
-
-    apps = list(deployed_apps_col.find({"user_id": user_id, "username": uname, "status": "active", "product_type": "api_claimer"}))
-    if not apps:
-        msg = "❌ No active containers found to update."
-        if hasattr(event_or_msg, 'edit'):
-            await event_or_msg.edit(msg, buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]])
-        else:
-            await event_or_msg.respond(msg, buttons=[[Button.inline("🔙 Back", b"manage_subs_menu")]])
-        return
-
-    # Sort to map Container 1 and Container 2 deterministically
-    apps = sorted(apps, key=lambda x: x.get("app_name", ""))
-    
-    results = []
-    for i, app in enumerate(apps):
-        app_name = app.get("app_name")
-        deploy_url = app.get("deploy_url")
-        auth_token = get_batch_token(deploy_url)
-        
-        new_key = k1 if i == 0 else (k2 if k2 else None)
-        if not new_key:
-            results.append(f"⏭️ {app_name} skipped (no key provided).")
-            continue
-            
-        ok = await asyncio.to_thread(update_deployed_app_config, app_name, deploy_url, auth_token, new_key)
-        if ok:
-            deployed_apps_col.update_one({"_id": app["_id"]}, {"$set": {"session_token": new_key}})
-            results.append(f"✅ {app_name} API key updated.")
-            
-            # Update api_subscriptions_col
-            if i == 0:
-                api_subscriptions_col.update_many(
-                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]}, 
-                    {"$set": {"session_token": new_key}}
-                )
-            else:
-                api_subscriptions_col.update_many(
-                    {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]}, 
-                    {"$set": {"session_token_2": new_key}}
-                )
-        else:
-            results.append(f"❌ {app_name} failed to update.")
-
-    txt = "<b>🔌 API Keys Update Result</b>\n\n" + "\n".join(results)
-    buttons = [[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]]
-    
-    if hasattr(event_or_msg, 'edit'):
-        await event_or_msg.edit(txt, parse_mode="html", buttons=buttons)
-    else:
-        await event_or_msg.respond(txt, parse_mode="html", buttons=buttons)
 
 # --- REFERRAL MENU HANDLER ---
 @bot.on(events.CallbackQuery(data=b"menu_referral"))
@@ -2260,9 +1002,7 @@ async def back_start_handler(event):
         existing = None
 
     buttons = []
-    buttons.append([Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")])
     buttons.append([Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")])
-    buttons.append([Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")])
 
     if existing:
         buttons.append([Button.inline("⚙️ Manage Subscriptions", b"manage_subs_menu")])
@@ -2280,9 +1020,7 @@ async def back_start_handler(event):
     caption_text = (
         "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
-        "• Code Claimer (High-speed claiming)\n"
-        "• Chat Farmer (Automated chat farming)\n"
-        "• API Claimer (Dedicated API container)\n\n"
+        "• Chat Farmer (Automated chat farming)\n\n"
         "Select a product to purchase or manage your account."
     )
     
@@ -2300,9 +1038,7 @@ async def back_start_handler(event):
 async def buy_sub_menu_handler(event):
     await event.answer()
     buttons = [
-        [Button.inline("⚡ Buy Code Claimer", b"buy_product_claimer")],
         [Button.inline("👨‍🌾 Buy Chat Farmer", b"buy_product_farmer")],
-        [Button.inline("🔌 Buy API Claimer", b"buy_product_api_claimer")],
     ]
     await event.edit("<b>Select Product to Renew:</b>", parse_mode="html", buttons=buttons)
 
@@ -2311,55 +1047,20 @@ async def buy_product_handler(event):
     await event.answer()
     user_id = event.sender_id
     
-    data_str = event.data.decode()
-
-    # --- MAINTENANCE MODE FOR CODE CLAIMER & API CLAIMER ---
-    if data_str in ["buy_product_claimer", "buy_product_api_claimer"]:
-        prod_name = "Code Claimer" if data_str == "buy_product_claimer" else "API Claimer"
-        dev_note = (
-            "🚧 <b>Maintenance Mode</b> 🚧\n\n"
-            f"{prod_name} is currently unavailable.\n\n"
-            "<b>Developer Note:</b> <i>I am currently in a fucking hospital and can't run the claimer right now. Please check back later or choose another product.</i>"
-        )
-        buttons = [[Button.inline("🔙 Main Menu", b"back_to_start")]]
-        try:
-            await event.edit(dev_note, parse_mode="html", buttons=buttons)
-        except:
-            await event.respond(dev_note, parse_mode="html", buttons=buttons)
-        return
-    # -----------------------------------------
-
-    product_type = "claimer"
-    product_display = "Code Claimer"
-    
-    if "farmer" in data_str:
-        product_type = "farmer"
-        product_display = "Chat Farmer"
-    elif "api_claimer" in data_str:
-        product_type = "api_claimer"
-        product_display = "API Claimer"
+    product_type = "farmer"
+    product_display = "Chat Farmer"
         
     session = user_sessions.setdefault(user_id, {})
     session["expecting_username"] = True
     session["product"] = product_type
 
-    if product_type == "api_claimer":
-        text = (
-            f"<b>Buy {product_display} — Step 1: Provide your Stake username</b>\n\n"
-            "Send only the username. Examples:\n"
-            "• <code>alice123</code>\n"
-            "• <code>@alice123</code>\n\n"
-            "Do NOT send profile links or screenshots.\n\n"
-            "<i>After username confirmation, you'll need to provide <b>2 Stake API keys</b> for dual-container deployment.</i>"
-        )
-    else:
-        text = (
-            f"<b>Buy {product_display} — Step 1: Provide your Stake username</b>\n\n"
-            "Send only the username. Examples:\n"
-            "• <code>alice123</code>\n"
-            "• <code>@alice123</code>\n\n"
-            "Do NOT send profile links or screenshots. After you send the username you'll be asked to confirm it."
-        )
+    text = (
+        f"<b>Buy {product_display} — Step 1: Provide your Stake username</b>\n\n"
+        "Send only the username. Examples:\n"
+        "• <code>alice123</code>\n"
+        "• <code>@alice123</code>\n\n"
+        "Do NOT send profile links or screenshots. After you send the username you'll be asked to confirm it."
+    )
 
     try:
         await event.edit(text, parse_mode="html")
@@ -2407,37 +1108,15 @@ async def terminate_sub_menu_handler(event):
     
     active_details = None
     
-    data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
-    if data_claimer:
-        users = _extract_active_users_list(data_claimer)
+    data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
+    if data_farmer:
+        users = _extract_active_users_list(data_farmer)
         for u in users:
             if u.get("username", "").lower().lstrip("@") == username.lower():
                 expires = _parse_iso_datetime(str(u.get("expires", "")))
                 if expires:
-                    active_details = (CLAIMER_API_URL, expires, "Code Claimer")
+                    active_details = (FARMER_API_URL, expires, "Chat Farmer")
                     break
-
-    if not active_details:
-        data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
-        if data_farmer:
-            users = _extract_active_users_list(data_farmer)
-            for u in users:
-                if u.get("username", "").lower().lstrip("@") == username.lower():
-                    expires = _parse_iso_datetime(str(u.get("expires", "")))
-                    if expires:
-                        active_details = (FARMER_API_URL, expires, "Chat Farmer")
-                        break
-
-    if not active_details:
-        data_api_claimer = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
-        if data_api_claimer:
-            users = _extract_active_users_list(data_api_claimer)
-            for u in users:
-                if u.get("username", "").lower().lstrip("@") == username.lower():
-                    expires = _parse_iso_datetime(str(u.get("expires", "")))
-                    if expires:
-                        active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
-                        break
 
     if not active_details:
         session = user_sessions.setdefault(user_id, {})
@@ -2468,15 +1147,9 @@ async def terminate_sub_menu_handler(event):
     else:
         remaining_hours = 0
 
-    # Calculate refund based on the correct product's rate
     refund_amount = 0.0
     if remaining_hours > 0:
-        if product_name == "Code Claimer":
-            refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
-        elif product_name == "API Claimer":
-            refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
-        else:  # Chat Farmer
-            refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
+        refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
             
     refund_amount = round(refund_amount, 2)
 
@@ -2528,8 +1201,8 @@ async def terminate_execute_handler(event):
         
     await event.edit("⏳ Terminating subscription on all services...", parse_mode="html")
 
-    # ===== CALL ALL THREE PRODUCT APIs TO DELETE USER =====
-    all_api_urls = [CLAIMER_API_URL, FARMER_API_URL, API_CLAIMER_AUTH_URL]
+    # ===== CALL PRODUCT APIs TO DELETE USER =====
+    all_api_urls = [FARMER_API_URL]
     
     seen_urls = set()
     unique_api_urls = []
@@ -2538,50 +1211,12 @@ async def terminate_execute_handler(event):
             seen_urls.add(u)
             unique_api_urls.append(u)
 
-    deletion_results = []
     any_success = False
     for del_url in unique_api_urls:
         ok = await asyncio.to_thread(delete_user_api, username, del_url)
-        deletion_results.append((del_url, ok))
         if ok:
             any_success = True
         logger.info(f"[TERMINATE] delete_user_api on {del_url} for @{username}: {'ok' if ok else 'failed'}")
-
-    # ===== ALWAYS DELETE API CLAIMER CONTAINERS =====
-    container_lines = []
-    try:
-        deployed_apps_list = list(deployed_apps_col.find({"username": username, "status": "active"}))
-        if deployed_apps_list:
-            for deployed_app in deployed_apps_list:
-                app_name = deployed_app.get("app_name")
-                mirror = deployed_app.get("mirror_site", "?")
-                if app_name:
-                    delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                    
-                    now_dt = datetime.now(timezone.utc)
-                    deployed_apps_col.update_one(
-                        {"app_name": app_name},
-                        {"$set": {
-                            "status": "terminated",
-                            "terminated_at": now_dt,
-                            "deletion_reason": "user_terminated"
-                        }}
-                    )
-                    api_subscriptions_col.update_many(
-                        {"$or": [{"app_name_1": app_name}, {"app_name_2": app_name}]},
-                        {"$set": {
-                            "status": "terminated",
-                            "terminated_at": now_dt,
-                            "deletion_reason": "user_terminated"
-                        }}
-                    )
-                    
-                    status_icon = "✅" if delete_ok else "⚠️"
-                    container_lines.append(f"{status_icon} <code>{app_name}</code> [{mirror}]")
-                    logger.info(f"[TERMINATE] Container {app_name} deletion: {'ok' if delete_ok else 'failed'} — {delete_resp}")
-
-    except Exception as e:
-        logger.error(f"[TERMINATE] Failed to delete deployed apps during termination: {e}")
 
     # ===== UPDATE DB: REFUND POINTS AND REMOVE USERNAME =====
     user_doc = users_col.find_one({"user_id": user_id})
@@ -2595,23 +1230,16 @@ async def terminate_execute_handler(event):
 
     # ===== BUILD RESULT MESSAGE =====
     if any_success:
-        container_summary = ""
-        if container_lines:
-            container_summary = "\n\n<b>🗑 Containers Stopped:</b>\n" + "\n".join(container_lines)
-        elif not container_lines:
-            container_summary = "\n\n<i>No active containers found.</i>"
-
         await event.edit(
             f"✅ <b>Subscription Terminated</b>\n\n"
             f"User <code>@{username}</code> removed from all services.\n"
-            f"Refunded: <b>{refund} Points</b>."
-            f"{container_summary}",
+            f"Refunded: <b>{refund} Points</b>.",
             parse_mode="html",
             buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]]
         )
     else:
         await event.edit(
-            "❌ Failed to delete user from all servers. Please contact support.",
+            "❌ Failed to delete user from servers. Please contact support.",
             buttons=[[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
         )
         
@@ -2630,111 +1258,6 @@ async def text_input_handler(event):
     if raw_text.startswith("/"):
         return
 
-    # --- HANDLE EDIT API KEY 1 ---
-    if session.get("expecting_edit_api_1"):
-        session["expecting_edit_api_1"] = False
-        session["edit_api_key_1"] = raw_text
-        session["expecting_edit_api_2"] = True
-        await event.respond(
-            "✅ Key 1 saved.\n\nPlease send the NEW second API key (or click below):",
-            buttons=[
-                [Button.inline("⏭️ Use same key", b"edit_api_use_same")],
-                [Button.inline("⏭️ Skip (Leave unchanged)", b"edit_api_skip_2")]
-            ]
-        )
-        try:
-            await event.delete()
-        except:
-            pass
-        return
-
-    # --- HANDLE EDIT API KEY 2 ---
-    if session.get("expecting_edit_api_2"):
-        session["expecting_edit_api_2"] = False
-        session["edit_api_key_2"] = raw_text
-        msg = await event.respond("🔄 Processing API key update...")
-        await process_edit_api_keys(msg, user_id, session)
-        try:
-            await event.delete()
-        except:
-            pass
-        return
-
-    # --- HANDLE FIRST SESSION TOKEN (API KEY 1) FOR API CLAIMER ---
-    if session.get("expecting_session_token"):
-        session["expecting_session_token"] = False
-        
-        if len(raw_text) < 20:
-            await event.respond(
-                "❌ Invalid API key. Your Stake API key should be a long string.\n\n"
-                "Please send a valid API key or click below to skip.",
-                buttons=[[Button.inline("⏭️ Skip both keys", b"skip_session_token")]]
-            )
-            session["expecting_session_token"] = True  # keep waiting
-            return
-            
-        session["session_token"] = raw_text
-        
-        # Now ask for second API key
-        session["expecting_session_token_2"] = True
-        username_clean = session.get("username", "UNKNOWN")
-        
-        text = (
-            f"✅ <b>API Key 1 Saved!</b> [{API_CLAIMER_MIRROR_SITE_1}]\n\n"
-            f"Username: <code>@{username_clean}</code>\n\n"
-            f"<b>Step 3: Provide your Second Stake API Key</b>\n\n"
-            f"This key will be used for the second container [{API_CLAIMER_MIRROR_SITE_2}].\n\n"
-            "Please paste your second API key now:"
-        )
-        buttons = [
-            [Button.inline("⏭️ Use same key for both", b"use_same_api_key")],
-            [Button.inline("⏭️ Skip second key", b"skip_session_token_2")],
-            [Button.inline("❌ Cancel", b"back_to_start")]
-        ]
-        await event.respond(text, parse_mode="html", buttons=buttons)
-        return
-
-    # --- HANDLE SECOND SESSION TOKEN (API KEY 2) FOR API CLAIMER ---
-    if session.get("expecting_session_token_2"):
-        session["expecting_session_token_2"] = False
-        
-        if len(raw_text) < 20:
-            await event.respond(
-                "❌ Invalid API key. Your Stake API key should be a long string.\n\n"
-                "Please send a valid key, or use the options below.",
-                buttons=[
-                    [Button.inline("⏭️ Use same key for both", b"use_same_api_key")],
-                    [Button.inline("⏭️ Skip second key", b"skip_session_token_2")],
-                ]
-            )
-            session["expecting_session_token_2"] = True  # keep waiting
-            return
-            
-        session["session_token_2"] = raw_text
-        
-        username_clean = session.get("username", "UNKNOWN")
-        prod_name = "API Claimer"
-        
-        text = (
-            f"✅ <b>Both API Keys Saved!</b>\n\n"
-            f"Username: <code>@{username_clean}</code>\n"
-            f"Product: <b>{prod_name}</b>\n\n"
-            f"• Key 1 [{API_CLAIMER_MIRROR_SITE_1}]: ✅\n"
-            f"• Key 2 [{API_CLAIMER_MIRROR_SITE_2}]: ✅\n\n"
-            "Choose payment method:"
-        )
-        buttons = [
-            [Button.inline("💳 Buy with Crypto / Points", b"buy_crypto")],
-            [Button.inline("💵 Buy with UPI", b"buy_upi")],
-            [
-                Button.url("🛠 Support", SUPPORT_CHAT_LINK),
-                Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
-            ],
-        ]
-        
-        await event.respond(text, parse_mode="html", buttons=buttons)
-        return
-        
     import re
     username_pattern = r"^[A-Za-z0-9_@]{3,51}$"
     if not re.match(username_pattern, raw_text):
@@ -2749,37 +1272,15 @@ async def text_input_handler(event):
         
         active_details = None
         
-        data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
-        if data_claimer:
-            users = _extract_active_users_list(data_claimer)
+        data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
+        if data_farmer:
+            users = _extract_active_users_list(data_farmer)
             for u in users:
                 if u.get("username", "").lower().lstrip("@") == target_username.lower():
                     expires = _parse_iso_datetime(str(u.get("expires", "")))
                     if expires:
-                        active_details = (CLAIMER_API_URL, expires, "Code Claimer")
+                        active_details = (FARMER_API_URL, expires, "Chat Farmer")
                         break
-
-        if not active_details:
-            data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
-            if data_farmer:
-                users = _extract_active_users_list(data_farmer)
-                for u in users:
-                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
-                        expires = _parse_iso_datetime(str(u.get("expires", "")))
-                        if expires:
-                            active_details = (FARMER_API_URL, expires, "Chat Farmer")
-                            break
-
-        if not active_details:
-            data_api_claimer = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
-            if data_api_claimer:
-                users = _extract_active_users_list(data_api_claimer)
-                for u in users:
-                    if u.get("username", "").lower().lstrip("@") == target_username.lower():
-                        expires = _parse_iso_datetime(str(u.get("expires", "")))
-                        if expires:
-                            active_details = (API_CLAIMER_AUTH_URL, expires, "API Claimer")
-                            break
                             
         if not active_details:
             await event.respond(
@@ -2803,12 +1304,7 @@ async def text_input_handler(event):
 
         refund_amount = 0.0
         if remaining_hours > 0:
-            if product_name == "Code Claimer":
-                refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
-            elif product_name == "API Claimer":
-                refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
-            else:
-                refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
+            refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
                 
         refund_amount = round(refund_amount, 2)
         
@@ -2898,13 +1394,7 @@ async def text_input_handler(event):
     session["pending_username"] = username_clean
     session["expecting_username"] = False
     
-    prod = session.get("product", "claimer")
-    if prod == "api_claimer":
-        prod_name = "API Claimer"
-    elif prod == "farmer":
-        prod_name = "Chat Farmer"
-    else:
-        prod_name = "Code Claimer"
+    prod_name = "Chat Farmer"
 
     text = (
         f"Product: <b>{prod_name}</b>\n\n"
@@ -2918,120 +1408,6 @@ async def text_input_handler(event):
     ]
     await event.respond(text, parse_mode="html", buttons=buttons)
 
-
-# ================== API KEY HELPER CALLBACKS ==================
-@bot.on(events.CallbackQuery(data=b"use_same_api_key"))
-async def use_same_api_key_handler(event):
-    """User wants to use the same API key for both containers."""
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.get(user_id)
-    
-    if not session:
-        return await event.respond("Session expired. Restart with /start.")
-        
-    session["expecting_session_token_2"] = False
-    key1 = session.get("session_token")
-    if not key1:
-        return await event.respond("Session expired. Restart with /start.")
-        
-    session["session_token_2"] = key1  # Use same key
-    
-    username_clean = session.get("username", "UNKNOWN")
-    
-    text = (
-        f"✅ <b>Same API Key set for both containers.</b>\n\n"
-        f"Username: <code>@{username_clean}</code>\n"
-        f"• Key 1 [{API_CLAIMER_MIRROR_SITE_1}]: ✅\n"
-        f"• Key 2 [{API_CLAIMER_MIRROR_SITE_2}]: ✅ (same)\n\n"
-        "Choose payment method:"
-    )
-    buttons = [
-        [Button.inline("💳 Buy with Crypto / Points", b"buy_crypto")],
-        [Button.inline("💵 Buy with UPI", b"buy_upi")],
-        [
-            Button.url("🛠 Support", SUPPORT_CHAT_LINK),
-            Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
-        ],
-    ]
-    
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
-
-@bot.on(events.CallbackQuery(data=b"skip_session_token_2"))
-async def skip_session_token_2_handler(event):
-    """User skips the second API key."""
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.get(user_id)
-    
-    if not session:
-        return await event.respond("Session expired. Restart with /start.")
-        
-    session["expecting_session_token_2"] = False
-    
-    username_clean = session.get("username", "UNKNOWN")
-    
-    text = (
-        f"⚠️ <b>Second API Key Skipped</b>\n\n"
-        f"Username: <code>@{username_clean}</code>\n"
-        f"• Key 1 [{API_CLAIMER_MIRROR_SITE_1}]: ✅\n"
-        f"• Key 2 [{API_CLAIMER_MIRROR_SITE_2}]: ⚠️ Skipped\n\n"
-        f"<i>Only one container will be deployed.</i>\n\n"
-        "Choose payment method:"
-    )
-    buttons = [
-        [Button.inline("💳 Buy with Crypto / Points", b"buy_crypto")],
-        [Button.inline("💵 Buy with UPI", b"buy_upi")],
-        [
-            Button.url("🛠 Support", SUPPORT_CHAT_LINK),
-            Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
-        ],
-    ]
-    
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
-
-@bot.on(events.CallbackQuery(data=b"skip_session_token"))
-async def skip_session_token_handler(event):
-    """User skips both API keys."""
-    await event.answer()
-    user_id = event.sender_id
-    session = user_sessions.get(user_id)
-    
-    if not session:
-        return await event.respond("Session expired. Restart with /start.")
-        
-    session["expecting_session_token"] = False
-    session["expecting_session_token_2"] = False
-    
-    username_clean = session.get("username", "UNKNOWN")
-    prod_name = "API Claimer"
-    
-    text = (
-        f"<b>⚠️ API Keys Skipped</b>\n\n"
-        f"Username: <code>@{username_clean}</code>\n"
-        f"Product: <b>{prod_name}</b>\n\n"
-        f"<i>No containers will be deployed automatically. Contact support to deploy manually.</i>\n\n"
-        "Choose payment method:"
-    )
-    buttons = [
-        [Button.inline("💳 Buy with Crypto / Points", b"buy_crypto")],
-        [Button.inline("💵 Buy with UPI", b"buy_upi")],
-        [
-            Button.url("🛠 Support", SUPPORT_CHAT_LINK),
-            Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
-        ],
-    ]
-    
-    try:
-        await event.edit(text, parse_mode="html", buttons=buttons)
-    except:
-        await event.respond(text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"confirm_username_no"))
 async def confirm_no_handler(event):
@@ -3074,34 +1450,7 @@ async def confirm_yes_handler(event):
     except Exception:
         logger.exception("Failed to persist username to DB on confirm.")
 
-    prod = session.get("product", "claimer")
-    if prod == "api_claimer":
-        prod_name = "API Claimer"
-    elif prod == "farmer":
-        prod_name = "Chat Farmer"
-    else:
-        prod_name = "Code Claimer"
-
-    # === API CLAIMER: ASK FOR FIRST SESSION TOKEN ===
-    if prod == "api_claimer":
-        text = (
-            f"Stake username saved: <code>@{username_clean}</code>\n"
-            f"Product: <b>{prod_name}</b>\n\n"
-            f"<b>Step 2: Provide API Key 1</b> [{API_CLAIMER_MIRROR_SITE_1}]\n\n"
-            "Your dual-container setup requires <b>2 Stake API keys</b>.\n\n"
-            f"Please paste your <b>first API key</b> (for {API_CLAIMER_MIRROR_SITE_1}) now:"
-        )
-        buttons = [
-            [Button.inline("⏭️ Skip both keys", b"skip_session_token")],
-            [Button.inline("❌ Cancel", b"back_to_start")]
-        ]
-        session["expecting_session_token"] = True
-        
-        try:
-            await event.edit(text, parse_mode="html", buttons=buttons)
-        except:
-            await event.respond(text, parse_mode="html", buttons=buttons)
-        return
+    prod_name = "Chat Farmer"
 
     # Standard flow for other products
     text = (
@@ -3144,18 +1493,8 @@ async def buy_crypto_handler(event):
     if not session or "username" not in session:
         return await event.respond("Restart with /start and send your username.")
 
-    prod = session.get("product", "claimer")
-    if prod == "api_claimer":
-        prod_name = "API Claimer"
-    elif prod == "farmer":
-        prod_name = "Chat Farmer"
-    else:
-        prod_name = "Code Claimer"
-
+    prod_name = "Chat Farmer"
     header = f"⚡ <b>{prod_name} Plans</b>"
-    
-    now = datetime.now(timezone.utc)
-    is_weekend = now.weekday() in [5, 6]
 
     text = (
         f"{header}\n"
@@ -3165,89 +1504,37 @@ async def buy_crypto_handler(event):
     
     buttons = []
     
-    if prod == "api_claimer":
-        p1d = PLANS_API_CLAIMER["1d"]
-        p3d = PLANS_API_CLAIMER["3d"]
-        p7d = PLANS_API_CLAIMER["7d"]
-        p14d = PLANS_API_CLAIMER["14d"]
-        p30d = PLANS_API_CLAIMER["30d"]
-        
-        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        text += f"• {p3d['label']:<8} — {p3d['amount']} USDT\n"
-        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
-        text += f"• {p14d['label']:<8} — {p14d['amount']} USDT\n"
-        text += f"• {p30d['label']:<8} — {p30d['amount']} USDT\n"
-        
-        buttons.append([
-            Button.inline(f"1d — {p1d['amount']} $", b"plan_api_1d"),
-            Button.inline(f"3d — {p3d['amount']} $", b"plan_api_3d"),
-        ])
-        buttons.append([
-            Button.inline(f"7d — {p7d['amount']} $", b"plan_api_7d"),
-            Button.inline(f"14d — {p14d['amount']} $", b"plan_api_14d"),
-        ])
-        buttons.append([
-            Button.inline(f"30d — {p30d['amount']} $", b"plan_api_30d"),
-        ])
-        
-    elif prod == "farmer":
-        p3h = PLANS_FARMER_SHORT["3h"]
-        p6h = PLANS_FARMER_SHORT["6h"]
-        p12h = PLANS_FARMER_SHORT["12h"]
-        p1d = PLAN_1D_FARMER
-        p2d = PLANS_LONG_TERM["2d"]
-        p4d = PLANS_LONG_TERM["4d"]
-        p7d = PLANS_LONG_TERM["7d"]
+    p3h = PLANS_FARMER_SHORT["3h"]
+    p6h = PLANS_FARMER_SHORT["6h"]
+    p12h = PLANS_FARMER_SHORT["12h"]
+    p1d = PLAN_1D_FARMER
+    p2d = PLANS_LONG_TERM["2d"]
+    p4d = PLANS_LONG_TERM["4d"]
+    p7d = PLANS_LONG_TERM["7d"]
 
-        text += f"• {p3h['label']:<8} — {p3h['amount']} USDT\n"
-        text += f"• {p6h['label']:<8} — {p6h['amount']} USDT\n"
-        text += f"• {p12h['label']:<8} — {p12h['amount']} USDT\n"
-        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
-        text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
-        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
+    text += f"• {p3h['label']:<8} — {p3h['amount']} USDT\n"
+    text += f"• {p6h['label']:<8} — {p6h['amount']} USDT\n"
+    text += f"• {p12h['label']:<8} — {p12h['amount']} USDT\n"
+    text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
+    text += f"• {p2d['label']:<8} — {p2d['amount']} USDT\n"
+    text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
+    text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
 
-        buttons.append([
-            Button.inline(f"3h — {p3h['amount']} $", b"plan_3h"),
-            Button.inline(f"6h — {p6h['amount']} $", b"plan_6h"),
-        ])
-        buttons.append([
-            Button.inline(f"12h — {p12h['amount']} $", b"plan_12h"),
-            Button.inline(f"1d — {p1d['amount']} $", b"plan_1d"),
-        ])
-        buttons.append([
-            Button.inline(f"2d — {p2d['amount']} $", b"plan_2d"),
-            Button.inline(f"4d — {p4d['amount']} $", b"plan_4d"),
-        ])
-        buttons.append([
-            Button.inline(f"7d — {p7d['amount']} $", b"plan_7d"),
-        ])
-        
-    else:
-        p1d = PLAN_1D_CLAIMER
-        p2d = PLANS_LONG_TERM["2d"]
-        p4d = PLANS_LONG_TERM["4d"]
-        p7d = PLANS_LONG_TERM["7d"]
-        
-        p2d_label_display = "2 Days (48h)"
-
-        if is_weekend:
-            text += f"• {'Wknd Pass':<8} — 5.0 USDT (Till Sun Night)\n"
-            buttons.append([Button.inline("Weekend Pass — 5.0 $", b"plan_weekend")])
-
-        text += f"• {p1d['label']:<8} — {p1d['amount']} USDT\n"
-        text += f"• {p2d_label_display:<8} — {p2d['amount']} USDT\n"
-        text += f"• {p4d['label']:<8} — {p4d['amount']} USDT\n"
-        text += f"• {p7d['label']:<8} — {p7d['amount']} USDT\n"
-
-        buttons.append([
-            Button.inline(f"{p1d['label']} — {p1d['amount']} $", b"plan_1d"),
-            Button.inline(f"2d (48h) — {p2d['amount']} $", b"plan_2d"),
-        ])
-        buttons.append([
-            Button.inline(f"4d — {p4d['amount']} $", b"plan_4d"),
-            Button.inline(f"7d — {p7d['amount']} $", b"plan_7d"),
-        ])
+    buttons.append([
+        Button.inline(f"3h — {p3h['amount']} $", b"plan_3h"),
+        Button.inline(f"6h — {p6h['amount']} $", b"plan_6h"),
+    ])
+    buttons.append([
+        Button.inline(f"12h — {p12h['amount']} $", b"plan_12h"),
+        Button.inline(f"1d — {p1d['amount']} $", b"plan_1d"),
+    ])
+    buttons.append([
+        Button.inline(f"2d — {p2d['amount']} $", b"plan_2d"),
+        Button.inline(f"4d — {p4d['amount']} $", b"plan_4d"),
+    ])
+    buttons.append([
+        Button.inline(f"7d — {p7d['amount']} $", b"plan_7d"),
+    ])
 
     text += "\nSelect your plan:"
 
@@ -3266,40 +1553,8 @@ async def plan_handler(event):
 
     plan_key_raw = event.data.decode().split("_", 1)[1]
     
-    prod = session.get("product", "claimer")
-
-    if plan_key_raw.startswith("api_"):
-        plan_key = plan_key_raw.replace("api_", "")
-        plan = PLANS_API_CLAIMER.get(plan_key)
-        if not plan:
-            return await event.respond("Invalid plan. Try again.")
-        amount = plan["amount"]
-        label = plan["label"]
-        hours = plan["hours"]
-        
-    elif plan_key_raw == "weekend":
-        now = datetime.now(timezone.utc)
-        weekday = now.weekday()
-        days_until_monday = 7 - weekday
-        next_monday = (now + timedelta(days=days_until_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        remaining = next_monday - now
-        hours = int(remaining.total_seconds() / 3600)
-        
-        if hours < 1: 
-            hours = 1
-            
-        amount = 5.0
-        label = "Weekend Pass"
-        plan_key = "weekend"
-        
-    elif plan_key_raw == "1d":
-        if prod == "farmer":
-            plan = PLAN_1D_FARMER
-        elif prod == "api_claimer":
-            plan = PLANS_API_CLAIMER["1d"]
-        else:
-            plan = PLAN_1D_CLAIMER
+    if plan_key_raw == "1d":
+        plan = PLAN_1D_FARMER
         amount = plan["amount"]
         label = plan["label"]
         hours = plan["hours"]
@@ -3318,8 +1573,6 @@ async def plan_handler(event):
             return await event.respond("Invalid plan. Try again.")
         amount = plan["amount"]
         label = plan["label"]
-        if prod == "claimer" and plan_key_raw == "2d":
-            label = "2 Days (48h)"
         hours = plan["hours"]
         plan_key = plan_key_raw
 
@@ -3331,12 +1584,7 @@ async def plan_handler(event):
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
     
-    if prod == "api_claimer":
-        prod_name = "API Claimer"
-    elif prod == "farmer":
-        prod_name = "Chat Farmer"
-    else:
-        prod_name = "Code Claimer"
+    prod_name = "Chat Farmer"
 
     text = (
         f"🛒 <b>Checkout: {prod_name}</b>\n\n"
@@ -3372,19 +1620,9 @@ async def pay_points_handler(event):
     hours = session["selected_hours"]
     username_clean = session["username"]
     
-    prod = session.get("product", "claimer")
-    if prod == "api_claimer":
-        api_url = API_CLAIMER_AUTH_URL
-        prod_name = "API Claimer"
-        forwards = [API_CLAIMER_FORWARD_1, API_CLAIMER_FORWARD_2, API_CLAIMER_FORWARD_3]
-    elif prod == "farmer":
-        api_url = FARMER_API_URL
-        prod_name = "Chat Farmer"
-        forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
-    else:
-        api_url = CLAIMER_API_URL
-        prod_name = "Code Claimer"
-        forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2, CLAIMER_FORWARD_3]
+    api_url = FARMER_API_URL
+    prod_name = "Chat Farmer"
+    forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
         
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
@@ -3400,102 +1638,6 @@ async def pay_points_handler(event):
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
     
     if activation_ok:
-        # === API CLAIMER: DUAL DEPLOY CONTAINERS ===
-        deploy_message = ""
-        deploy_buttons = None
-        
-        if prod == "api_claimer":
-            session_token_1 = session.get("session_token")
-            session_token_2 = session.get("session_token_2")
-            
-            if session_token_1 and session_token_2:
-                now_dt = datetime.now(timezone.utc)
-                expires_at = now_dt + timedelta(hours=hours)
-                
-                deploy_result = await animate_dual_deploy_progress(
-                    user_id, username_clean, session_token_1, session_token_2
-                )
-                
-                if len(deploy_result) == 9:
-                    app_name_1, ok1, res1, app_name_2, ok2, res2, dep_url_1, dep_url_2, auth_tok = deploy_result
-                else:
-                    app_name_1, ok1, res1, app_name_2, ok2, res2 = deploy_result
-                    dep_url_1, dep_url_2, auth_tok = "", "", ""
-                
-                # Save both containers to DB
-                for (app_name, ok, res, mirror, deploy_url, tok) in [
-                    (app_name_1, ok1, res1, API_CLAIMER_MIRROR_SITE_1, dep_url_1, session_token_1),
-                    (app_name_2, ok2, res2, API_CLAIMER_MIRROR_SITE_2, dep_url_2, session_token_2),
-                ]:
-                    web_url = res.get("web_url", f"https://{app_name}.herokuapp.com") if ok else ""
-                    
-                    deployed_apps_col.insert_one({
-                        "user_id": user_id,
-                        "username": username_clean,
-                        "app_name": app_name,
-                        "session_token": tok,
-                        "mirror_site": mirror,
-                        "deploy_url": deploy_url,
-                        "deployed_at": now_dt,
-                        "expires_at": expires_at,
-                        "status": "active" if ok else "deploy_failed",
-                        "web_url": web_url,
-                        "region": API_CLAIMER_REGION,
-                        "product_type": "api_claimer"
-                    })
-                    
-                api_subscriptions_col.update_one(
-                    {"user_id": user_id, "username": username_clean, "product_type": "api_claimer"},
-                    {
-                        "$set": {
-                            "user_id": user_id,
-                            "username": username_clean,
-                            "product_type": "api_claimer",
-                            "app_name_1": app_name_1,
-                            "app_name_2": app_name_2,
-                            "api_url": api_url,
-                            "expires_at": expires_at,
-                            "status": "active",
-                            "session_token": session_token_1,
-                            "session_token_2": session_token_2,
-                            "updated_at": now_dt
-                        }
-                    },
-                    upsert=True
-                )
-                
-                status_url = build_api_claimer_status_url(username_clean)
-                
-                if ok1 or ok2:
-                    deploy_buttons = [[Button.url("Check Live Claim Status", status_url)]]
-                    deploy_message = (
-                        f"\n\n✅ <b>Dual Containers Deployed!</b>\n"
-                        f"• <code>{app_name_1}</code> [{API_CLAIMER_MIRROR_SITE_1}] — {'✅' if ok1 else '❌'}\n"
-                        f"• <code>{app_name_2}</code> [{API_CLAIMER_MIRROR_SITE_2}] — {'✅' if ok2 else '❌'}\n"
-                        f"Region: <b>{API_CLAIMER_REGION.upper()}</b>"
-                    )
-                else:
-                    err1 = get_user_friendly_deploy_error(res1)
-                    err2 = get_user_friendly_deploy_error(res2)
-                    deploy_message = (
-                        f"\n\n⚠️ <b>Both deployments failed.</b>\n"
-                        f"• Container 1: {err1}\n"
-                        f"• Container 2: {err2}\n"
-                        f"Contact support for manual deployment."
-                    )
-                    deploy_buttons = [[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
-                    
-            elif session_token_1:
-                deploy_message = (
-                    f"\n\n⚠️ <b>Second API key missing.</b>\n"
-                    f"Only one container can be deployed. Contact support."
-                )
-            else:
-                deploy_message = (
-                    f"\n\n⚠️ <b>No API keys provided.</b>\n"
-                    f"Contact support to deploy your containers manually."
-                )
-                
         # FORWARD + PIN
         for chat, msg_id in forwards:
             try:
@@ -3514,10 +1656,9 @@ async def pay_points_handler(event):
             f"Your <b>{prod_name} - {label}</b> subscription is activated.\n"
             f"Deducted: <b>{amount} Points</b>\n"
             f"Remaining: <b>{user_points - amount:.2f} Points</b>\n"
-            f"Duration: <b>{hours} hours</b>."
-            f"{deploy_message}",
+            f"Duration: <b>{hours} hours</b>.",
             parse_mode="html",
-            buttons=deploy_buttons
+            buttons=[[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
         )
     else:
         users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
@@ -3536,13 +1677,7 @@ async def pay_crypto_inv_handler(event):
     label = session["selected_label"]
     hours = session["selected_hours"]
     
-    prod = session.get("product", "claimer")
-    if prod == "api_claimer":
-        prod_name = "API Claimer"
-    elif prod == "farmer":
-        prod_name = "Chat Farmer"
-    else:
-        prod_name = "Code Claimer"
+    prod_name = "Chat Farmer"
 
     if user_id in user_tasks:
         old = user_tasks[user_id]
@@ -3637,11 +1772,10 @@ async def broadcast_handler(event):
 
 # ================== MAIN ==================
 def main():
-    logger.info("Stake Payment Bot (Dual Deploy API Claimer) is running...")
+    logger.info("Stake Payment Bot (Chat Farmer) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
-        loop.create_task(sync_db_with_api_loop())
     except Exception as e:
         logger.exception(f"Failed to schedule background tasks: {e}")
 
