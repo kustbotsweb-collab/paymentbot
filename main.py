@@ -191,9 +191,14 @@ async def safe_edit(obj, *args, **kwargs):
 
 # ================== BATCH MANAGEMENT ==================
 
-def get_available_deployer():
-    """Find the first deployer that hasn't reached its deployment limit."""
+def get_available_deployer(tried_urls=None):
+    """Find the first deployer that hasn't reached its deployment limit and hasn't been tried yet."""
+    if tried_urls is None:
+        tried_urls = set()
+        
     for deployer in API_CLAIMER_DEPLOYERS:
+        if deployer["url"] in tried_urls:
+            continue
         count = deployed_apps_col.count_documents({
             "deploy_url": deployer["url"],
             "status": "active"
@@ -485,96 +490,116 @@ def extract_status_from_query_response(resp_json):
 async def animate_deploy_progress(user_id: int, username_clean: str, session_token: str):
     """
     Deploy A SINGLE container using an available load-balanced deployer.
+    If a deployer is full (422 error), it moves to the next available deployer.
     Returns (app_name, ok, res, deploy_url, auth_token).
     """
-    deployer = get_available_deployer()
-    if not deployer:
-        msg = "❌ All deployment slots are currently full across all deployers. Please contact support to arrange availability."
-        await bot.send_message(user_id, msg)
-        return ("app_1", False, {"error": "All deployers full"}, "", "")
-
-    deploy_url = deployer["url"]
-    auth_token = deployer["token"]
-
-    app_name = generate_unique_app_name(username_clean)
-
-    progress_state = {
-        "message": "Starting...", "progress": 0, "done": False, "success": False, "result": {}
-    }
-
-    # Send initial progress message
-    def render_text():
-        s = progress_state
-        icon = "✅" if (s["done"] and s["success"]) else ("❌" if (s["done"] and not s["success"]) else "🔄")
-        return (
-            f"🚀 <b>Deploying your API Rebate Claimer...</b>\n\n"
-            f"{icon} <b>Container</b> — <code>{app_name}</code> [{API_CLAIMER_MIRROR_SITE}]\n"
-            f"   Progress: <b>{s['progress']}%</b> | {s['message']}\n\n"
-            f"Region: <b>{API_CLAIMER_REGION.upper()}</b> | Deployer: <b>#{deployer['deploy_id']}</b>"
-        )
-
-    progress_msg = await bot.send_message(user_id, render_text(), parse_mode="html")
-
+    tried_urls = set()
+    progress_msg = None
     last_rendered = None
+    
+    while True:
+        deployer = get_available_deployer(tried_urls)
+        if not deployer:
+            msg = "❌ All deployment slots are currently full across all deployers. Please contact support to arrange availability."
+            if progress_msg:
+                await safe_edit(bot, user_id, progress_msg.id, msg)
+            else:
+                await bot.send_message(user_id, msg)
+            return ("app_1", False, {"error": "All deployers full"}, "", "")
 
-    def make_cb():
-        def cb(status, message, progress):
-            progress_state["message"] = message or progress_state["message"]
-            if progress is not None:
-                progress_state["progress"] = progress
-        return cb
+        deploy_url = deployer["url"]
+        auth_token = deployer["token"]
+        tried_urls.add(deploy_url)
 
-    async def update_display(force=False):
-        nonlocal last_rendered
-        key = (progress_state["progress"], progress_state["message"], progress_state["done"])
-        if not force and key == last_rendered:
-            return
-        await safe_edit(bot, user_id, progress_msg.id, render_text(), parse_mode="html")
-        last_rendered = key
+        app_name = generate_unique_app_name(username_clean)
 
-    # Launch deployment in thread
-    task = asyncio.create_task(
-        asyncio.to_thread(
-            deploy_api_container,
-            session_token, app_name, deploy_url, auth_token,
-            API_CLAIMER_MIRROR_SITE, make_cb()
+        progress_state = {
+            "message": "Starting...", "progress": 0, "done": False, "success": False, "result": {}
+        }
+
+        def render_text():
+            s = progress_state
+            icon = "✅" if (s["done"] and s["success"]) else ("❌" if (s["done"] and not s["success"]) else "🔄")
+            return (
+                f"🚀 <b>Deploying your API Rebate Claimer...</b>\n\n"
+                f"{icon} <b>Container</b> — <code>{app_name}</code> [{API_CLAIMER_MIRROR_SITE}]\n"
+                f"   Progress: <b>{s['progress']}%</b> | {s['message']}\n\n"
+                f"Region: <b>{API_CLAIMER_REGION.upper()}</b> | Deployer: <b>#{deployer['deploy_id']}</b>"
+            )
+
+        if not progress_msg:
+            progress_msg = await bot.send_message(user_id, render_text(), parse_mode="html")
+        else:
+            await safe_edit(bot, user_id, progress_msg.id, render_text(), parse_mode="html")
+            last_rendered = None  # Reset last_rendered for the new deployer
+
+        def make_cb():
+            def cb(status, message, progress):
+                progress_state["message"] = message or progress_state["message"]
+                if progress is not None:
+                    progress_state["progress"] = progress
+            return cb
+
+        async def update_display(force=False):
+            nonlocal last_rendered
+            key = (progress_state["progress"], progress_state["message"], progress_state["done"])
+            if not force and key == last_rendered:
+                return
+            await safe_edit(bot, user_id, progress_msg.id, render_text(), parse_mode="html")
+            last_rendered = key
+
+        # Launch deployment in thread
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                deploy_api_container,
+                session_token, app_name, deploy_url, auth_token,
+                API_CLAIMER_MIRROR_SITE, make_cb()
+            )
         )
-    )
 
-    while not task.done():
-        await asyncio.wait([task], timeout=1.0)
-        await update_display()
+        while not task.done():
+            await asyncio.wait([task], timeout=1.0)
+            await update_display()
 
-    try:
-        ok, res = task.result()
-    except Exception as e:
-        ok, res = False, {"error": str(e)}
-        await report_error_to_admin(e, f"animate_deploy_progress task execution for {username_clean}")
+        try:
+            ok, res = task.result()
+        except Exception as e:
+            ok, res = False, {"error": str(e)}
+            await report_error_to_admin(e, f"animate_deploy_progress task execution for {username_clean}")
+            
+        progress_state["done"] = True
+        progress_state["success"] = ok
+        progress_state["result"] = res
         
-    progress_state["done"] = True
-    progress_state["success"] = ok
-    progress_state["result"] = res
-    if ok:
-        progress_state["progress"] = 100
-        progress_state["message"] = "Deployed successfully!"
-    else:
-        progress_state["message"] = get_user_friendly_deploy_error(res)
+        if ok:
+            progress_state["progress"] = 100
+            progress_state["message"] = "Deployed successfully!"
+            await update_display(force=True)
 
-    # Final forced update
-    await update_display(force=True)
+            status_url = build_api_claimer_status_url(username_clean)
+            final_text = f"✅ Deployed successfully! (Deployer #{deployer['deploy_id']})\n\nDashboard URL: {status_url}"
+            buttons = [[Button.url("📊 Dashboard", status_url)]]
+            await safe_edit(bot, user_id, progress_msg.id, final_text, parse_mode="html", buttons=buttons)
 
-    status_url = build_api_claimer_status_url(username_clean)
+            return app_name, ok, res, deploy_url, auth_token
+        else:
+            error_msg = get_user_friendly_deploy_error(res)
+            progress_state["message"] = error_msg
+            await update_display(force=True)
+            
+            # Check if we should retry due to full batch limit
+            if error_msg == "All slots are already full in this batch.":
+                progress_state["message"] = "Batch full, switching to next available deployer..."
+                await update_display(force=True)
+                await asyncio.sleep(2)
+                continue  # Loop to next available deployer
+            
+            # If it's a different error, fail normally
+            final_text = "⚠️ Deployment failed. Please contact support."
+            buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
+            await safe_edit(bot, user_id, progress_msg.id, final_text, parse_mode="html", buttons=buttons)
 
-    if ok:
-        final_text = f"✅ Deployed successfully! (Deployer #{deployer['deploy_id']})\n\nDashboard URL: {status_url}"
-        buttons = [[Button.url("📊 Dashboard", status_url)]]
-    else:
-        final_text = "⚠️ Deployment failed. Please contact support."
-        buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
-
-    await safe_edit(bot, user_id, progress_msg.id, final_text, parse_mode="html", buttons=buttons)
-
-    return app_name, ok, res, deploy_url, auth_token
+            return app_name, ok, res, deploy_url, auth_token
 
 
 async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: int, plan_amount: float, is_bulk_points: bool = False, points_amount: int = 0):
