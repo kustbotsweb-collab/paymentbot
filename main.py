@@ -15,7 +15,7 @@ from pymongo import MongoClient
 
 API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
-BOT_TOKEN = "8362240967:AAFeg-ZsWbSabFRn7MaRCS6bsdp2M1e4YNk"
+BOT_TOKEN = "8573345038:AAEppbd1tFOP5NEq0AzJcjBM9moDkves5eQ"
 
 SUPPORT_CHAT_LINK = "https://t.me/Rabit0505"
 UPDATES_CHANNEL_LINK = "https://t.me/Rabit0505"
@@ -94,8 +94,8 @@ REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 
 # --- TIME WINDOW LOGIC ---
 IST = timezone(timedelta(hours=5, minutes=30))
-SALE_START = datetime(2026, 6, 25, 21, 0, 0, tzinfo=IST)
-SALE_END = datetime(2026, 6, 25, 22, 0, 0, tzinfo=IST)
+SALE_START = datetime(2026, 6, 26, 21, 0, 0, tzinfo=IST)
+SALE_END = datetime(2026, 6, 26, 22, 0, 0, tzinfo=IST)
 
 def get_sale_status():
     now = datetime.now(IST)
