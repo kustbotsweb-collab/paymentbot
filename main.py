@@ -94,7 +94,7 @@ REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 
 # --- TIME WINDOW LOGIC ---
 IST = timezone(timedelta(hours=5, minutes=30))
-SALE_START = datetime(2026, 6, 26, 21, 0, 0, tzinfo=IST)
+SALE_START = datetime(2026, 6, 25, 23, 0, 0, tzinfo=IST)
 SALE_END = datetime(2026, 6, 26, 22, 0, 0, tzinfo=IST)
 
 def get_sale_status():
