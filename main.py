@@ -21,6 +21,10 @@ SUPPORT_CHAT_LINK = "https://t.me/Rabit0505"
 UPDATES_CHANNEL_LINK = "https://t.me/Rabit0505"
 UPI_DM_LINK = "https://t.me/Rabit0505"
 
+# --- Promo Constants ---
+PROMO_CHANNEL = "rebateautomations"
+PROMO_MSG_ID = 79
+
 # --- Code Claimer Assets ---
 CLAIMER_API_URL = "https://code-auth-dash-643e4005edaa.herokuapp.com"
 # Forwards for Claimer (Proof channels)
@@ -92,22 +96,39 @@ OXAPAY_API_BASE = "https://api.oxapay.com"
 ACTIVE_USERS_POLL_INTERVAL = 60   # seconds between polls (1 minute)
 REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 
-# --- TIME WINDOW LOGIC ---
+# --- TIME WINDOW LOGIC & CACHING ---
 IST = timezone(timedelta(hours=5, minutes=30))
 SALE_START = datetime(2026, 6, 26, 21, 0, 0, tzinfo=IST)
 SALE_END = datetime(2026, 6, 26, 22, 0, 0, tzinfo=IST)
 
+_cached_sale_status = None
+_cached_sale_time_str = None
+_last_sale_status_calc = 0.0
+
 def get_sale_status():
+    global _cached_sale_status, _cached_sale_time_str, _last_sale_status_calc
+    current_time = time.time()
+    
+    # Caching constraint applied to prevent CPU throttling
+    if current_time - _last_sale_status_calc < 5.0:
+        return _cached_sale_status, _cached_sale_time_str
+
     now = datetime.now(IST)
     if now < SALE_START:
         diff = SALE_START - now
         total_hours = diff.days * 24 + (diff.seconds // 3600)
         minutes = (diff.seconds % 3600) // 60
-        return "before", f"{total_hours}h {minutes}m"
+        _cached_sale_status = "before"
+        _cached_sale_time_str = f"{total_hours}h {minutes}m"
     elif now <= SALE_END:
-        return "active", ""
+        _cached_sale_status = "active"
+        _cached_sale_time_str = ""
     else:
-        return "after", ""
+        _cached_sale_status = "after"
+        _cached_sale_time_str = ""
+
+    _last_sale_status_calc = current_time
+    return _cached_sale_status, _cached_sale_time_str
 
 # --- PRICING PLANS ---
 PLANS = {
@@ -147,6 +168,33 @@ _expired_cleanup_sent = {}
 # Track pre-expiry container deletion to avoid duplicates: { key: True }
 _pre_expiry_deletion_sent = {}
 
+# ================== ASYNC QUEUES & SEMAPHORES ==================
+
+msg_queue = asyncio.Queue()
+heroku_deploy_semaphore = asyncio.Semaphore(2)  # Caps max concurrent Heroku API deployments to 2
+
+async def broadcast_worker():
+    while True:
+        try:
+            uid, orig_id, from_peer = await msg_queue.get()
+            try:
+                fwd = await bot.forward_messages(uid, orig_id, from_peer=from_peer)
+                try:
+                    await bot.pin_message(uid, fwd.id, notify=True)
+                except:
+                    pass
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 1)
+                await msg_queue.put((uid, orig_id, from_peer)) # requeue
+            except Exception:
+                pass
+            finally:
+                msg_queue.task_done()
+                await asyncio.sleep(0.05) # safe rate limit threshold
+        except Exception as e:
+            logger.error(f"Broadcast worker internal error: {e}")
+            await asyncio.sleep(1)
+
 # ================== GLOBAL ERROR REPORTING ==================
 
 async def report_error_to_admin(e, context=""):
@@ -164,6 +212,24 @@ def sync_report_error_to_admin(e, context=""):
         asyncio.run_coroutine_threadsafe(report_error_to_admin(e, context), bot.loop)
     except Exception as ex:
         logger.error(f"Failed to schedule sync error report: {ex}")
+
+# ================== HELPER: BEFORE SALE / PROMO SENDER ==================
+
+async def handle_sale_before_state(event, time_left, user_id):
+    """Sends promo message, then updates UI with time left."""
+    try:
+        await bot.forward_messages(user_id, PROMO_MSG_ID, from_peer=PROMO_CHANNEL)
+    except FloodWaitError as e:
+        await asyncio.sleep(e.seconds)
+        await bot.forward_messages(user_id, PROMO_MSG_ID, from_peer=PROMO_CHANNEL)
+    except Exception as e:
+        logger.warning(f"Failed to forward promo msg to {user_id}: {e}")
+
+    msg = f"⏳ <b>Sale will start after {time_left}</b>"
+    if isinstance(event, events.CallbackQuery.Event):
+        await safe_edit(event, msg, parse_mode="html")
+    else:
+        await event.respond(msg, parse_mode="html")
 
 # ================== SAFE RATE LIMIT HANDLER ==================
 
@@ -506,24 +572,26 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
             await safe_edit(bot, user_id, progress_msg.id, render_text(), parse_mode="html")
             last_rendered = key
 
-        task = asyncio.create_task(
-            asyncio.to_thread(
-                deploy_api_container,
-                session_token, app_name, deploy_url, auth_token,
-                API_CLAIMER_MIRROR_SITE, make_cb()
+        # Adding Queue-Type execution for rate limiting Heroku
+        async with heroku_deploy_semaphore:
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    deploy_api_container,
+                    session_token, app_name, deploy_url, auth_token,
+                    API_CLAIMER_MIRROR_SITE, make_cb()
+                )
             )
-        )
 
-        while not task.done():
-            await asyncio.wait([task], timeout=1.0)
-            await update_display()
+            while not task.done():
+                await asyncio.wait([task], timeout=1.0)
+                await update_display()
 
-        try:
-            ok, res = task.result()
-        except Exception as e:
-            ok, res = False, {"error": str(e)}
-            await report_error_to_admin(e, f"animate_deploy_progress task execution for {username_clean}")
-            
+            try:
+                ok, res = task.result()
+            except Exception as e:
+                ok, res = False, {"error": str(e)}
+                await report_error_to_admin(e, f"animate_deploy_progress task execution for {username_clean}")
+
         progress_state["done"] = True
         progress_state["success"] = ok
         progress_state["result"] = res
@@ -640,25 +708,26 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
 
                 referrer_id = user_record.get("referrer_id")
                 if referrer_id:
-                    try:
-                        reward_points = plan_amount * 0.10
-                        users_col.update_one(
-                            {"user_id": referrer_id},
-                            {"$inc": {"points": reward_points}}
-                        )
+                    if referrer_id:
                         try:
-                            await bot.send_message(
-                                referrer_id,
-                                f"<tg-emoji emoji-id='5208541126583136130'>🎉</tg-emoji> <b>Referral Bonus!</b>\n\n"
-                                f"Your referred user just purchased a plan.\n"
-                                f"You earned <b>{reward_points:.2f} points</b> (USDT value)."
-                                , parse_mode="html"
+                            reward_points = plan_amount * 0.10
+                            users_col.update_one(
+                                {"user_id": referrer_id},
+                                {"$inc": {"points": reward_points}}
                             )
+                            try:
+                                await bot.send_message(
+                                    referrer_id,
+                                    f"<tg-emoji emoji-id='5208541126583136130'>🎉</tg-emoji> <b>Referral Bonus!</b>\n\n"
+                                    f"Your referred user just purchased a plan.\n"
+                                    f"You earned <b>{reward_points:.2f} points</b> (USDT value)."
+                                    , parse_mode="html"
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to notify referrer {referrer_id}: {e}")
                         except Exception as e:
-                            logger.error(f"Failed to notify referrer {referrer_id}: {e}")
-                    except Exception as e:
-                        logger.error(f"Error processing referral reward: {e}")
-                        await report_error_to_admin(e, f"wait_for_payment referral reward {referrer_id}")
+                            logger.error(f"Error processing referral reward: {e}")
+                            await report_error_to_admin(e, f"wait_for_payment referral reward {referrer_id}")
 
                 if product_type == "api_claimer":
                     session_token = session.get("session_token")
@@ -1151,7 +1220,7 @@ async def add_points_handler(event):
 
     args = event.message.message.split()
     if len(args) != 3:
-        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Usage: `/add <@username/userid> <amount>`", parse_mode="markdown")
+        return await event.reply("❌ Usage: `/add <@username/userid> <amount>`", parse_mode="markdown")
 
     target_arg = args[1]
     amount_arg = args[2]
@@ -1159,7 +1228,7 @@ async def add_points_handler(event):
     try:
         amount = float(amount_arg)
     except ValueError:
-        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Invalid amount. Please enter a number.", parse_mode="markdown")
+        return await event.reply("❌ Invalid amount. Please enter a number.", parse_mode="markdown")
 
     target_user_id = None
     user_record = None
@@ -1174,7 +1243,7 @@ async def add_points_handler(event):
             target_user_id = user_record.get("user_id")
 
     if not user_record or not target_user_id:
-        return await event.reply(f"![❌](tg://emoji?id=5273914604752216432) User `{target_arg}` not found in the database.", parse_mode="markdown")
+        return await event.reply(f"❌ User `{target_arg}` not found in the database.", parse_mode="markdown")
 
     try:
         users_col.update_one({"user_id": target_user_id}, {"$inc": {"points": amount}})
@@ -1183,7 +1252,7 @@ async def add_points_handler(event):
         new_balance = updated_user.get("points", 0.0)
 
         await event.reply(
-            f"![✅](tg://emoji?id=5039793437776282663) **Success!**\n\n"
+            f"✅ **Success!**\n\n"
             f"User: `{target_arg}`\n"
             f"Added: `{amount}` points\n"
             f"New Balance: `{new_balance:.2f}`",
@@ -1204,7 +1273,7 @@ async def add_points_handler(event):
     except Exception as e:
         logger.error(f"Error adding points: {e}")
         await report_error_to_admin(e, "add_points_handler DB update")
-        await event.reply(f"![❌](tg://emoji?id=5273914604752216432) Database error: {e}", parse_mode="markdown")
+        await event.reply(f"❌ Database error: {e}", parse_mode="markdown")
 
 # ================== BALANCE COMMAND (OWNER ONLY) ==================
 
@@ -1218,7 +1287,7 @@ async def balance_handler(event):
 
     args = event.message.message.split()
     if len(args) != 2:
-        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Usage: `/balance <@username/userid>`", parse_mode="markdown")
+        return await event.reply("❌ Usage: `/balance <@username/userid>`", parse_mode="markdown")
 
     target_arg = args[1]
     user_record = None
@@ -1233,7 +1302,7 @@ async def balance_handler(event):
             user_record = users_col.find_one({"tg_username": clean_username})
 
     if not user_record:
-        return await event.reply(f"![❌](tg://emoji?id=5273914604752216432) User `{target_arg}` not found in the database.", parse_mode="markdown")
+        return await event.reply(f"❌ User `{target_arg}` not found in the database.", parse_mode="markdown")
 
     points = user_record.get("points", 0.0)
     stake_user = user_record.get("username", "Not Set")
@@ -1551,12 +1620,12 @@ async def extend_time_handler(event):
 @bot.on(events.NewMessage(pattern=r"^/buypoints$"))
 async def buypoints_handler(event):
     status, time_left = get_sale_status()
+    user_id = event.sender_id
+    
     if status == "before":
-        return await event.reply(f"⏳ <b>Sale will start after {time_left}</b>", parse_mode="html")
+        return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await event.reply("❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.")
-
-    user_id = event.sender_id
     
     try:
         await bot(functions.messages.SendReactionRequest(
@@ -1604,14 +1673,13 @@ async def buypoints_handler(event):
 @bot.on(events.CallbackQuery(pattern=b"bulk_"))
 async def bulk_points_handler(event):
     await event.answer()
-    
+    user_id = event.sender_id
     status, time_left = get_sale_status()
+    
     if status == "before":
-        return await safe_edit(event, f"⏳ <b>Sale will start after {time_left}</b>", parse_mode="html")
+        return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.", buttons=[[Button.inline("🏠 Back", b"back_to_start")]])
-
-    user_id = event.sender_id
     
     data_str = event.data.decode()
     package_key = data_str.replace("bulk_", "")
@@ -1654,14 +1722,13 @@ async def bulk_points_handler(event):
 @bot.on(events.CallbackQuery(data=b"back_buypoints"))
 async def back_buypoints_handler(event):
     await event.answer()
-    
+    user_id = event.sender_id
     status, time_left = get_sale_status()
+    
     if status == "before":
-        return await safe_edit(event, f"⏳ <b>Sale will start after {time_left}</b>", parse_mode="html")
+        return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
-
-    user_id = event.sender_id
     
     user_data = users_col.find_one({"user_id": user_id})
     current_points = user_data.get("points", 0.0) if user_data else 0.0
@@ -1696,8 +1763,8 @@ async def back_buypoints_handler(event):
 @bot.on(events.CallbackQuery(data=b"bulk_pay_crypto"))
 async def bulk_pay_crypto_handler(event):
     await event.answer()
-    
     status, _ = get_sale_status()
+    
     if status != "active":
         return await safe_edit(event, "❌ Sale is not active. You cannot purchase new points right now.", buttons=[[Button.inline("🏠 Back", b"back_to_start")]])
 
@@ -1849,8 +1916,7 @@ async def start_handler(event):
     sale_status, time_left = get_sale_status()
 
     if sale_status == "before":
-        await event.respond(f"⏳ <b>Sale will start after {time_left}</b>", parse_mode="html")
-        return
+        return await handle_sale_before_state(event, time_left, user_id)
 
     buttons = []
     if sale_status == "active":
@@ -1904,10 +1970,6 @@ async def help_handler(event):
 
 # --- REFERRAL MENU HANDLER ---
 
-# Note: The referral button has been removed from the main menu per instructions,
-# but the backend logic for the referral functionality is retained below to 
-# satisfy the "dont leave or change anything else" constraint.
-
 @bot.on(events.CallbackQuery(data=b"menu_referral"))
 async def referral_menu_handler(event):
     await event.answer()
@@ -1947,15 +2009,14 @@ async def referral_menu_handler(event):
 @bot.on(events.CallbackQuery(data=b"menu_buypoints"))
 async def menu_buypoints_handler(event):
     await event.answer()
-    
+    user_id = event.sender_id
     status, time_left = get_sale_status()
+    
     if status == "before":
-        return await safe_edit(event, f"⏳ <b>Sale will start after {time_left}</b>", parse_mode="html")
+        return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
 
-    user_id = event.sender_id
-    
     user_data = users_col.find_one({"user_id": user_id})
     current_points = user_data.get("points", 0.0) if user_data else 0.0
     
@@ -2002,8 +2063,7 @@ async def back_start_handler(event):
             await event.delete() 
         except:
             pass
-        await bot.send_message(user_id, f"⏳ <b>Sale will start after {time_left}</b>", parse_mode="html")
-        return
+        return await handle_sale_before_state(event, time_left, user_id)
 
     buttons = []
     if sale_status == "active":
@@ -2692,9 +2752,11 @@ async def confirm_yes_handler(event):
 @bot.on(events.CallbackQuery(data=b"buy_upi"))
 async def buy_upi_handler(event):
     await event.answer()
+    user_id = event.sender_id
     status, time_left = get_sale_status()
+    
     if status == "before":
-        return await safe_edit(event, f"⏳ <b>Sale will start after {time_left}</b>", parse_mode="html")
+        return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new subscriptions using UPI. You can only use existing points.", buttons=[[Button.inline("🏠 Back", b"back_to_start")]])
     
@@ -3023,7 +3085,7 @@ async def pay_crypto_inv_handler(event):
 @bot.on(events.NewMessage(pattern=r"^/broadcast$"))
 async def broadcast_handler(event):
     if event.sender_id != BOT_OWNER_ID:
-        return await event.reply("![❌](tg://emoji?id=5273914604752216432) Unauthorized.", parse_mode="markdown")
+        return await event.reply("❌ Unauthorized.", parse_mode="markdown")
 
     if not event.is_reply:
         return await event.reply("Reply to a message with /broadcast.")
@@ -3032,30 +3094,15 @@ async def broadcast_handler(event):
     if not orig:
         return await event.reply("Message not found.")
 
-    total = 0
-    cursor = users_col.find({}, {"user_id": 1})
+    cursor = list(users_col.find({}, {"user_id": 1}))
+    total = len(cursor)
 
     for u in cursor:
         uid = u.get("user_id")
-        if not uid:
-            continue
+        if uid:
+            await msg_queue.put((uid, orig.id, event.chat_id))
 
-        try:
-            fwd = await bot.forward_messages(uid, orig.id, from_peer=event.chat_id)
-            if isinstance(fwd, list):
-                fwd = fwd[0]
-
-            try:
-                await bot.pin_message(uid, fwd.id, notify=True)
-            except:
-                pass
-
-            total += 1
-        except Exception as e:
-            logger.error(f"Broadcast fail to {uid}: {e}")
-            await report_error_to_admin(e, f"Broadcast fail to {uid}")
-
-    await event.reply(f"✅ Broadcast sent to {total} users.", parse_mode="html")
+    await event.reply(f"✅ Broadcast queued for {total} users.", parse_mode="html")
 
 # ================== MAIN ==================
 
@@ -3064,6 +3111,7 @@ def main():
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
+        loop.create_task(broadcast_worker()) # Start queue worker for Telegram limits
     except Exception as e:
         logger.exception(f"Failed to schedule background tasks: {e}")
         sync_report_error_to_admin(e, "Failed to schedule background tasks")
