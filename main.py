@@ -23,7 +23,7 @@ UPI_DM_LINK = "https://t.me/Rabit0505"
 
 # --- Promo Constants ---
 PROMO_CHANNEL = "rebateautomations"
-PROMO_MSG_ID = 79
+PROMO_MSG_ID = 105
 
 # --- Code Claimer Assets ---
 CLAIMER_API_URL = "https://code-auth-dash-643e4005edaa.herokuapp.com"
