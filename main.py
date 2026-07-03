@@ -26,25 +26,25 @@ PROMO_CHANNEL = "rebateautomations"
 PROMO_MSG_ID = 105
 
 # --- Code Claimer Assets ---
-CLAIMER_API_URL = "https://code-auth-dash-643e4005edaa.herokuapp.com"
+CLAIMER_API_URL = "https://code-auth-1-5e0f9f745e3a.herokuapp.com"
 # Forwards for Claimer (Proof channels)
 CLAIMER_FORWARD_1 = ("rebateautomations", 2)  # 1st: the claimer file
 CLAIMER_FORWARD_2 = ("rebateautomations", 3)  # 2nd: setup video
 
 # --- API Claimer Assets ---
-API_CLAIMER_AUTH_URL = "https://code-auth-dash-643e4005edaa.herokuapp.com"  # Same as Code Claimer auth
+API_CLAIMER_AUTH_URL = "https://code-auth-1-5e0f9f745e3a.herokuapp.com"  # Same as Code Claimer auth
 
 # DEPLOY URLS (Load Distribution Pool)
 API_CLAIMER_DEPLOYERS = [
     {
         "deploy_id": 1,
-        "url": "https://api-deploy-1-909341678ce6.herokuapp.com",
+        "url": "https://api-claimer-deploy-1-db3c59726639.herokuapp.com",
         "token": "fuck1234",
         "limit": 100
     },
     {
         "deploy_id": 2,
-        "url": "https://api-deploy-2-d15909815b67.herokuapp.com",
+        "url": "https://api-claimer-deploy-2-ca3a471ba17e.herokuapp.com",
         "token": "fuck1234",
         "limit": 100
     },
@@ -108,7 +108,7 @@ _last_sale_status_calc = 0.0
 def get_sale_status():
     global _cached_sale_status, _cached_sale_time_str, _last_sale_status_calc
     current_time = time.time()
-    
+
     # Caching constraint applied to prevent CPU throttling
     if current_time - _last_sale_status_calc < 5.0:
         return _cached_sale_status, _cached_sale_time_str
@@ -132,7 +132,8 @@ def get_sale_status():
 
 # --- PRICING PLANS ---
 PLANS = {
-    "24h":  {"label": "24 Hours (Sale)", "amount": 3.0, "hours": 28},
+    "24h":   {"label": "24 Hours (Sale)", "amount": 3.0, "hours": 28},
+    "1week": {"label": "1 Week (Sale)",   "amount": 8.0, "hours": 36},
 }
 
 # --- BULK POINTS PACKAGES ---
@@ -143,12 +144,24 @@ BULK_POINTS_PACKAGES = {
     "1000": {"label": "1000 Points", "amount": 1000.0, "points": 1000},
 }
 
+# --- BULK POINTS BONUS CONFIGURATION ---
+BULK_BONUS_THRESHOLD_USD = 200.0
+BULK_BONUS_RATE = 0.20  # 20% bonus points for purchases strictly over the threshold
+
+def calculate_bonus_points(amount: float, base_points: float):
+    """Returns (total_points, bonus_points). Bonus applies only when amount is strictly over the threshold."""
+    if amount > BULK_BONUS_THRESHOLD_USD:
+        bonus = base_points * BULK_BONUS_RATE
+        return base_points + bonus, bonus
+    return base_points, 0.0
+
 # --- REFUND CONFIGURATION ---
 REFUND_RATE_CLAIMER_PER_HOUR = 0.0 # Approx $0.15 per hour
 REFUND_RATE_API_CLAIMER_PER_HOUR = 0.0  # Approx $0.10 per hour
 
 PAYMENT_TIMEOUT = 15 * 60
 POLL_INTERVAL = 10
+DEPLOY_PROGRESS_EDIT_INTERVAL_SECONDS = 5  # min gap between deploy-progress message edits to avoid Telegram rate limits
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("rebate_buy_bot")
@@ -213,6 +226,74 @@ def sync_report_error_to_admin(e, context=""):
     except Exception as ex:
         logger.error(f"Failed to schedule sync error report: {ex}")
 
+# ================== USER CACHE (loaded at startup to avoid redundant DB reads/writes) ==================
+
+users_cache = {}
+
+def load_users_cache():
+    """Loads every user document into memory once at startup so hot paths (like /start) don't hit Mongo repeatedly."""
+    global users_cache
+    try:
+        docs = list(users_col.find({}))
+        users_cache = {d["user_id"]: d for d in docs if "user_id" in d}
+        logger.info(f"[CACHE] Loaded {len(users_cache)} users into memory cache.")
+    except Exception as e:
+        logger.exception(f"[CACHE] Failed to load users cache: {e}")
+        sync_report_error_to_admin(e, "load_users_cache failed")
+        users_cache = {}
+
+def get_user(user_id, refresh=False):
+    """Returns a user's doc from cache, falling back to (and populating from) the DB if missing."""
+    if not refresh:
+        cached = users_cache.get(user_id)
+        if cached is not None:
+            return cached
+    doc = users_col.find_one({"user_id": user_id})
+    if doc:
+        users_cache[user_id] = doc
+    return doc
+
+def get_user_points(user_id):
+    doc = get_user(user_id)
+    return doc.get("points", 0.0) if doc else 0.0
+
+def find_user_by_field(field, value):
+    """Scans the in-memory cache first (cheap for a few hundred users), only falling back to Mongo on a miss."""
+    for doc in users_cache.values():
+        if doc.get(field) == value:
+            return doc
+    doc = users_col.find_one({field: value})
+    if doc and "user_id" in doc:
+        users_cache[doc["user_id"]] = doc
+    return doc
+
+def _apply_update_to_dict(doc, update):
+    if "$set" in update:
+        doc.update(update["$set"])
+    if "$inc" in update:
+        for k, v in update["$inc"].items():
+            doc[k] = doc.get(k, 0) + v
+    if "$unset" in update:
+        for k in update["$unset"]:
+            doc.pop(k, None)
+    return doc
+
+def update_user(user_id, update, upsert=True):
+    """Writes to Mongo and mirrors the same change into the in-memory cache so reads never go stale."""
+    users_col.update_one({"user_id": user_id}, update, upsert=upsert)
+    doc = users_cache.get(user_id)
+    if doc is None:
+        doc = {"user_id": user_id}
+    _apply_update_to_dict(doc, update)
+    users_cache[user_id] = doc
+    return doc
+
+def insert_user(doc):
+    users_col.insert_one(doc)
+    if "user_id" in doc:
+        users_cache[doc["user_id"]] = doc
+    return doc
+
 # ================== HELPER: BEFORE SALE / PROMO SENDER ==================
 
 async def handle_sale_before_state(event, time_left, user_id):
@@ -265,7 +346,7 @@ async def safe_edit(obj, *args, **kwargs):
 def get_available_deployer(tried_urls=None):
     if tried_urls is None:
         tried_urls = set()
-        
+
     for deployer in API_CLAIMER_DEPLOYERS:
         if deployer["url"] in tried_urls:
             continue
@@ -287,13 +368,13 @@ def get_user_friendly_deploy_error(error_data):
             error_msg = str(error_data)
     else:
         error_msg = str(error_data)
-    
+
     if "app limit" in error_msg.lower() or "reached your app limit" in error_msg.lower():
         return "All slots are already full in this batch."
-    
+
     if "422" in error_msg and "invalid_params" in error_msg:
         return "All slots are already full in this batch."
-    
+
     return error_msg if error_msg else "Unknown error"
 
 # ================== OXAPAY HELPERS ==================
@@ -321,7 +402,7 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
             "admin": "admin1234",
             "duration": hours
         }
-        url = f"{api_url}/auth" 
+        url = f"{api_url}/auth"
         r = requests.get(url, params=params, timeout=120)
         r.raise_for_status()
         logger.info(f"[ACTIVATE] Activated for {username_with_at} on {api_url}. Response: {r.text}")
@@ -356,11 +437,11 @@ def delete_deployed_app(app_name: str):
             headers = {
                 "Authorization": f"Bearer {auth_token}"
             }
-            
+
             logger.info(f"[DELETE_APP] Trying to delete container {app_name} via {deploy_url}")
-            
+
             r = requests.delete(url, headers=headers, timeout=30)
-            
+
             if r.status_code == 200:
                 logger.info(f"[DELETE_APP] Successfully deleted app: {app_name} via {deploy_url}")
                 success_any = True
@@ -376,7 +457,7 @@ def delete_deployed_app(app_name: str):
                 else:
                     logger.error(f"[DELETE_APP] Failed via {deploy_url}: {r.status_code} - {r.text}")
                     last_resp = {"error": f"HTTP {r.status_code}: {r.text}"}
-                    
+
         except Exception as e:
             logger.exception(f"[DELETE_APP] Exception deleting app {app_name} via {deploy_url}: {e}")
             sync_report_error_to_admin(e, f"[DELETE_APP] Exception deleting app {app_name} via {deploy_url}")
@@ -387,25 +468,25 @@ def delete_deployed_app(app_name: str):
 def generate_unique_app_name(username: str, suffix_tag: str = ""):
     clean_user = username.lstrip("@").lower()
     clean_user = ''.join(c for c in clean_user if c.isalnum() or c == '-')
-    
+
     if len(clean_user) > 18:
         clean_user = clean_user[:18]
-    
+
     random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    
+
     base_name = f"api-cl-{clean_user}-{random_suffix}{suffix_tag}"
-    
+
     existing = deployed_apps_col.find_one({"app_name": base_name})
     if not existing:
         return base_name
-    
+
     for _ in range(100):
         suffix = random.choice(string.ascii_lowercase + string.digits)
         candidate = f"{base_name}-{suffix}"
         existing = deployed_apps_col.find_one({"app_name": candidate})
         if not existing:
             return candidate
-    
+
     fallback_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
     return f"{base_name}-{fallback_suffix}"
 
@@ -426,26 +507,26 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, aut
             "app_name": app_name,
             "MIRROR_SITE": mirror_site
         }
-        
+
         logger.info(f"[DEPLOY] Deploying container: {app_name} via {deploy_url} (MIRROR_SITE={mirror_site})")
         logger.info(f"[DEPLOY] Payload: session_token=***, app_name={app_name}, MIRROR_SITE={mirror_site}")
-        
+
         r = requests.post(url, headers=headers, json=payload, stream=True, timeout=3600)
-        
+
         if r.status_code >= 400:
             error_text = r.text
             logger.error(f"[DEPLOY] Deploy failed with status {r.status_code}: {error_text}")
             return False, {"error": f"HTTP {r.status_code}: {error_text}"}
-        
+
         final_result = None
         last_status = None
-        
+
         for line in r.iter_lines(decode_unicode=True):
             if not line:
                 continue
-            
+
             line = line.strip()
-            
+
             if line.startswith("data: "):
                 data_str = line[6:]
                 try:
@@ -453,16 +534,16 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, aut
                     status = data.get("status", "")
                     message = data.get("message", "")
                     progress = data.get("progress", 0)
-                    
+
                     logger.info(f"[DEPLOY] Status update: {status} - {message} ({progress}%)")
                     if progress_callback:
                         try:
                             progress_callback(status, message, progress)
                         except Exception as cb_error:
                             logger.warning(f"[DEPLOY] Progress callback failed: {cb_error}")
-                    
+
                     last_status = data
-                    
+
                     if status == "completed":
                         final_result = data
                         logger.info(f"[DEPLOY] Deploy completed successfully for {app_name}")
@@ -470,20 +551,20 @@ def deploy_api_container(session_token: str, app_name: str, deploy_url: str, aut
                     elif status == "error" or status == "build_failed" or status == "build_timeout":
                         logger.error(f"[DEPLOY] Deploy failed: {message}")
                         return False, data
-                        
+
                 except json.JSONDecodeError as e:
                     logger.warning(f"[DEPLOY] Failed to parse SSE data: {data_str}")
                     continue
-        
+
         if last_status:
             if last_status.get("status") == "completed":
                 return True, last_status
             elif last_status.get("success") is True:
                 return True, last_status
-        
+
         logger.warning(f"[DEPLOY] Stream ended without clear result for {app_name}")
         return False, {"error": "Stream ended without completion status", "last_status": last_status}
-        
+
     except requests.exceptions.Timeout as e:
         logger.error(f"[DEPLOY] Deploy timeout for {app_name}")
         sync_report_error_to_admin(e, f"[DEPLOY] Deploy timeout for {app_name}")
@@ -520,7 +601,7 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
     tried_urls = set()
     progress_msg = None
     last_rendered = None
-    
+
     while True:
         deployer = get_available_deployer(tried_urls)
         if not deployer:
@@ -582,9 +663,15 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
                 )
             )
 
+            # Throttle progress edits so we never edit the message more than once every
+            # DEPLOY_PROGRESS_EDIT_INTERVAL_SECONDS — avoids Telegram flood limits at scale.
+            last_edit_time = 0.0
             while not task.done():
                 await asyncio.wait([task], timeout=1.0)
-                await update_display()
+                now_t = time.time()
+                if now_t - last_edit_time >= DEPLOY_PROGRESS_EDIT_INTERVAL_SECONDS:
+                    await update_display()
+                    last_edit_time = now_t
 
             try:
                 ok, res = task.result()
@@ -595,7 +682,7 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
         progress_state["done"] = True
         progress_state["success"] = ok
         progress_state["result"] = res
-        
+
         if ok:
             progress_state["progress"] = 100
             progress_state["message"] = "Deployed successfully!"
@@ -611,13 +698,13 @@ async def animate_deploy_progress(user_id: int, username_clean: str, session_tok
             error_msg = get_user_friendly_deploy_error(res)
             progress_state["message"] = error_msg
             await update_display(force=True)
-            
+
             if error_msg == "All slots are already full in this batch.":
                 progress_state["message"] = "Batch full, switching to next available deployer..."
                 await update_display(force=True)
                 await asyncio.sleep(2)
                 continue
-            
+
             final_text = "⚠️ Deployment failed. Please contact support."
             buttons = [[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
             await safe_edit(bot, user_id, progress_msg.id, final_text, parse_mode="html", buttons=buttons)
@@ -632,7 +719,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
         return False
 
     product_type = session.get("product", "claimer")
-    
+
     if is_bulk_points:
         product_name = "Points Purchase"
         forwards = []
@@ -658,27 +745,21 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
             logger.info(f"Invoice {track_id} status check: {status}")
 
             if status == "paid":
-                
+
                 try:
                     sender = await bot.get_entity(user_id)
                     tg_username = getattr(sender, 'username', None)
                 except:
                     tg_username = None
-                
+
                 if is_bulk_points:
                     update_data = {"$inc": {"points": points_amount}}
                     if tg_username:
                         update_data["$set"] = {"tg_username": tg_username}
-                        
-                    users_col.update_one(
-                        {"user_id": user_id},
-                        update_data,
-                        upsert=True
-                    )
-                    
-                    user_record = users_col.find_one({"user_id": user_id})
+
+                    user_record = update_user(user_id, update_data, upsert=True)
                     new_balance = user_record.get("points", 0.0) if user_record else points_amount
-                    
+
                     await bot.send_message(
                         user_id,
                         f"✅ <b>Payment Confirmed!</b>\n\n"
@@ -688,33 +769,29 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         parse_mode="html"
                     )
                     return True
-                
+
                 username_clean = session.get("username", "UNKNOWN")
 
                 activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
 
-                user_record = users_col.find_one({"user_id": user_id})
+                user_record = get_user(user_id)
                 if user_record:
                     update_data = {"username": username_clean}
                     if tg_username:
                         update_data["tg_username"] = tg_username
-                    users_col.update_one({"user_id": user_id}, {"$set": update_data})
+                    user_record = update_user(user_id, {"$set": update_data})
                 else:
                     new_doc = {"user_id": user_id, "username": username_clean, "points": 0.0}
                     if tg_username:
                         new_doc["tg_username"] = tg_username
-                    users_col.insert_one(new_doc)
-                    user_record = {"user_id": user_id}
+                    user_record = insert_user(new_doc)
 
                 referrer_id = user_record.get("referrer_id")
                 if referrer_id:
                     if referrer_id:
                         try:
                             reward_points = plan_amount * 0.10
-                            users_col.update_one(
-                                {"user_id": referrer_id},
-                                {"$inc": {"points": reward_points}}
-                            )
+                            update_user(referrer_id, {"$inc": {"points": reward_points}})
                             try:
                                 await bot.send_message(
                                     referrer_id,
@@ -796,7 +873,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         try:
                             source_entity = await bot.get_entity(chat)
                         except Exception as e:
-                            source_entity = chat 
+                            source_entity = chat
 
                         fwd = await bot.forward_messages(entity=user_id, messages=msg_id, from_peer=source_entity)
                         if isinstance(fwd, list):
@@ -839,12 +916,12 @@ def get_active_users(api_url):
 
 def rename_user_api(old_username: str, new_username: str):
     results = []
-    
+
     if old_username and not old_username.startswith("@"):
         old_username = f"@{old_username}"
     if new_username and not new_username.startswith("@"):
         new_username = f"@{new_username}"
-        
+
     data = {"old_username": old_username, "new_username": new_username, "admin": "admin1234"}
 
     endpoints = [
@@ -864,7 +941,7 @@ def rename_user_api(old_username: str, new_username: str):
         except Exception as e:
             details += f"Err {ep}: {str(e)} "
             sync_report_error_to_admin(e, f"rename_user_api to {ep}")
-            
+
     if success:
         return {"ok": True}
     else:
@@ -873,9 +950,9 @@ def rename_user_api(old_username: str, new_username: str):
 def delete_user_api(username: str, api_url: str):
     if username and not username.startswith("@"):
         username = f"@{username}"
-    
+
     params = {"username": username, "admin": "admin1234"}
-    
+
     try:
         r = requests.post(f"{api_url}/delete_user", params=params, timeout=10)
         r.raise_for_status()
@@ -927,7 +1004,7 @@ def _extract_active_users_list(data):
 async def check_active_users_loop():
     await asyncio.sleep(5)
     logger.info("Active users reminder loop started (60s interval, 10min reminder, auto-delete containers).")
-    
+
     api_sources = [
         {"name": "Code Rebate Claimer", "url": CLAIMER_API_URL},
         {"name": "API Rebate Claimer",  "url": API_CLAIMER_AUTH_URL},
@@ -983,7 +1060,7 @@ async def check_active_users_loop():
 
                         username_clean = username.lstrip("@").strip()
 
-                        rec     = users_col.find_one({"username": username_clean})
+                        rec     = find_user_by_field("username", username_clean)
                         user_id = rec.get("user_id") if rec else None
 
                         if 0 < seconds_left <= (REMINDER_THRESHOLD_MINUTES * 60):
@@ -1214,7 +1291,7 @@ async def check_active_users_loop():
 async def add_points_handler(event):
     sender = await event.get_sender()
     is_rabit = getattr(sender, 'username', '').lower() == 'rabit0505'
-    
+
     if not is_rabit and event.sender_id != BOT_OWNER_ID:
         return
 
@@ -1235,10 +1312,10 @@ async def add_points_handler(event):
 
     if target_arg.isdigit():
         target_user_id = int(target_arg)
-        user_record = users_col.find_one({"user_id": target_user_id})
+        user_record = get_user(target_user_id)
     else:
         clean_username = target_arg.lstrip("@")
-        user_record = users_col.find_one({"username": clean_username})
+        user_record = find_user_by_field("username", clean_username)
         if user_record:
             target_user_id = user_record.get("user_id")
 
@@ -1246,9 +1323,7 @@ async def add_points_handler(event):
         return await event.reply(f"❌ User `{target_arg}` not found in the database.", parse_mode="markdown")
 
     try:
-        users_col.update_one({"user_id": target_user_id}, {"$inc": {"points": amount}})
-        
-        updated_user = users_col.find_one({"user_id": target_user_id})
+        updated_user = update_user(target_user_id, {"$inc": {"points": amount}})
         new_balance = updated_user.get("points", 0.0)
 
         await event.reply(
@@ -1294,12 +1369,12 @@ async def balance_handler(event):
 
     if target_arg.isdigit():
         target_user_id = int(target_arg)
-        user_record = users_col.find_one({"user_id": target_user_id})
+        user_record = get_user(target_user_id)
     else:
         clean_username = target_arg.lstrip("@")
-        user_record = users_col.find_one({"username": clean_username})
+        user_record = find_user_by_field("username", clean_username)
         if not user_record:
-            user_record = users_col.find_one({"tg_username": clean_username})
+            user_record = find_user_by_field("tg_username", clean_username)
 
     if not user_record:
         return await event.reply(f"❌ User `{target_arg}` not found in the database.", parse_mode="markdown")
@@ -1328,20 +1403,20 @@ async def apicstats_handler(event):
     status_msg = await event.reply("📊 <b>Fetching API Rebate Claimer Stats...</b>", parse_mode="html")
 
     now = datetime.now(timezone.utc)
-    
+
     api_data = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL)
-    
+
     api_users = []
     if api_data and isinstance(api_data, dict):
         api_users = _extract_active_users_list(api_data)
-    
+
     db_containers = list(deployed_apps_col.find({"product_type": "api_claimer"}))
-    
+
     total_api_users = len(api_users)
     total_db_containers = len(db_containers)
     active_containers = len([c for c in db_containers if c.get("status") == "active"])
     expired_containers = len([c for c in db_containers if c.get("status") in ["expired_deleted", "terminated"]])
-    
+
     report_lines = []
     report_lines.append("<b>📊 API REBATE CLAIMER STATS (Single Deploy)</b>")
     report_lines.append(f"📅 <i>Generated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}</i>")
@@ -1354,23 +1429,23 @@ async def apicstats_handler(event):
     report_lines.append("")
     report_lines.append("<b>👥 Active Users (from API):</b>")
     report_lines.append("━━━━━━━━━━━━━━━━━━━━")
-    
+
     if not api_users:
         report_lines.append("<i>No active users found on API.</i>")
     else:
         for idx, user in enumerate(api_users, 1):
             username = user.get("username", "Unknown")
             expires_raw = user.get("expires")
-            
+
             if expires_raw:
                 expires_dt = _parse_iso_datetime(str(expires_raw))
                 if expires_dt:
                     if expires_dt.tzinfo is None:
                         expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-                    
+
                     time_left = expires_dt - now
                     total_seconds = time_left.total_seconds()
-                    
+
                     if total_seconds > 0:
                         hours_left = total_seconds / 3600
                         if hours_left >= 24:
@@ -1383,7 +1458,7 @@ async def apicstats_handler(event):
                     else:
                         time_str = "EXPIRED"
                         status_emoji = "🔴"
-                    
+
                     expires_str = expires_dt.strftime('%Y-%m-%d %H:%M UTC')
                 else:
                     time_str = "N/A"
@@ -1393,7 +1468,7 @@ async def apicstats_handler(event):
                 time_str = "N/A"
                 expires_str = "No expiry"
                 status_emoji = "⚪"
-            
+
             clean_username = username.lstrip("@") if username else ""
             containers = list(deployed_apps_col.find({"username": clean_username, "product_type": "api_claimer"}))
             container_info = ""
@@ -1403,18 +1478,18 @@ async def apicstats_handler(event):
                 c_mirror = c.get("mirror_site", "?")
                 icon = "📦" if c_status == "active" else "📭"
                 container_info += f"\n   {icon} {c_name} [{c_mirror}] ({c_status})"
-            
+
             report_lines.append(f"{status_emoji} <code>@{clean_username}</code>")
             report_lines.append(f"   ⏱ {time_str} left | Expires: {expires_str}{container_info}")
-    
+
     api_usernames = set(u.get("username", "").lower().lstrip("@") for u in api_users)
-    
+
     db_only_containers = []
     for container in db_containers:
         container_username = container.get("username", "").lower()
         if container_username not in api_usernames and container.get("status") == "active":
             db_only_containers.append(container)
-    
+
     if db_only_containers:
         report_lines.append("")
         report_lines.append("<b>📦 DB Containers (Not in API):</b>")
@@ -1426,10 +1501,10 @@ async def apicstats_handler(event):
             mirror = container.get("mirror_site", "?")
             deployed_at = container.get("deployed_at")
             expires_at = container.get("expires_at")
-            
+
             deployed_str = deployed_at.strftime('%Y-%m-%d') if deployed_at else "N/A"
             expires_str = expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else "N/A"
-            
+
             if expires_at:
                 if isinstance(expires_at, str):
                     expires_at = _parse_iso_datetime(expires_at)
@@ -1443,13 +1518,13 @@ async def apicstats_handler(event):
                     status_emoji = "⚪"
             else:
                 status_emoji = "⚪"
-            
+
             report_lines.append(f"{status_emoji} <code>@{username}</code>")
             report_lines.append(f"   📦 {app_name} [{mirror}] | Status: {status}")
             report_lines.append(f"   Deployed: {deployed_str} | Expires: {expires_str}")
-    
+
     full_report = "\n".join(report_lines)
-    
+
     if len(full_report) <= 4096:
         await safe_edit(status_msg, full_report, parse_mode="html")
     else:
@@ -1466,7 +1541,7 @@ async def apicstats_handler(event):
                     current_chunk = line
         if current_chunk:
             chunks.append(current_chunk)
-        
+
         for i, chunk in enumerate(chunks):
             if i == 0:
                 await safe_edit(status_msg, chunk, parse_mode="html")
@@ -1481,7 +1556,7 @@ async def extend_time_handler(event):
         return
 
     args = event.message.message.split()
-    
+
     if len(args) < 3:
         return await event.reply(
             "❌ <b>Usage:</b> <code>/extend &lt;username/userid&gt; &lt;hours&gt; [product]</code>\n\n"
@@ -1493,44 +1568,44 @@ async def extend_time_handler(event):
             "<i>If product not specified, extends on all active products.</i>",
             parse_mode="html"
         )
-    
+
     target_arg = args[1]
     hours_arg = args[2]
     product_arg = args[3].lower() if len(args) > 3 else None
-    
+
     try:
         hours_to_add = int(hours_arg)
         if hours_to_add <= 0:
             raise ValueError("Hours must be positive")
     except ValueError:
         return await event.reply("❌ Invalid hours. Please enter a positive number.", parse_mode="html")
-    
+
     valid_products = ["claimer", "api_claimer"]
     if product_arg and product_arg not in valid_products:
         return await event.reply(f"❌ Invalid product. Valid options: {', '.join(valid_products)}", parse_mode="html")
-    
+
     target_user_id = None
     target_username = None
-    
+
     if target_arg.isdigit():
         target_user_id = int(target_arg)
-        user_record = users_col.find_one({"user_id": target_user_id})
+        user_record = get_user(target_user_id)
         if user_record:
             target_username = user_record.get("username")
         if not target_username:
             return await event.reply(f"❌ User ID `{target_user_id}` found but no username set in database. Please use username instead.", parse_mode="html")
     else:
         target_username = target_arg.lstrip("@")
-        user_record = users_col.find_one({"username": target_username})
+        user_record = find_user_by_field("username", target_username)
         if user_record:
             target_user_id = user_record.get("user_id")
-    
+
     status_msg = await event.reply(f"🔄 Extending subscription for <code>@{target_username}</code>...", parse_mode="html")
-    
+
     results = []
-    
+
     products_to_extend = [product_arg] if product_arg else valid_products
-    
+
     for product in products_to_extend:
         if product == "claimer":
             api_url = CLAIMER_API_URL
@@ -1540,13 +1615,13 @@ async def extend_time_handler(event):
             product_name = "API Rebate Claimer"
         else:
             continue
-        
+
         try:
             success = await asyncio.to_thread(activate_subscription, f"@{target_username}", hours_to_add, api_url)
-            
+
             if success:
                 results.append(f"✅ <b>{product_name}</b>: Extended by {hours_to_add} hours")
-                
+
                 if product == "api_claimer":
                     containers = list(deployed_apps_col.find({"username": target_username, "status": "active"}))
                     for container in containers:
@@ -1562,7 +1637,7 @@ async def extend_time_handler(event):
                                     new_expires = current_expires + timedelta(hours=hours_to_add)
                                 else:
                                     new_expires = now + timedelta(hours=hours_to_add)
-                                
+
                                 app_name = container.get("app_name")
                                 mirror = container.get("mirror_site", "?")
                                 deployed_apps_col.update_one(
@@ -1576,19 +1651,19 @@ async def extend_time_handler(event):
                                 results.append(f"   📦 Container <code>{app_name}</code> [{mirror}] updated to: {new_expires.strftime('%Y-%m-%d %H:%M UTC')}")
             else:
                 results.append(f"❌ <b>{product_name}</b>: Failed to extend")
-                
+
         except Exception as e:
             logger.exception(f"Error extending {product_name} for {target_username}: {e}")
             await report_error_to_admin(e, f"Error extending {product_name} for {target_username}")
             results.append(f"❌ <b>{product_name}</b>: Error - {str(e)[:50]}")
-    
+
     result_text = (
         f"⏰ <b>Subscription Extension Result</b>\n\n"
         f"User: <code>@{target_username}</code>\n"
         f"Hours Added: <b>{hours_to_add}</b>\n\n"
     )
     result_text += "\n".join(results)
-    
+
     if target_user_id:
         try:
             api_data = await asyncio.to_thread(get_active_users, API_CLAIMER_AUTH_URL if product_arg == "api_claimer" else CLAIMER_API_URL)
@@ -1598,7 +1673,7 @@ async def extend_time_handler(event):
                     if u.get("username", "").lower().lstrip("@") == target_username.lower():
                         new_expiry_str = u.get("expires", "N/A")
                         break
-            
+
             await bot.send_message(
                 target_user_id,
                 f"🎉 <b>Subscription Extended!</b>\n\n"
@@ -1612,7 +1687,7 @@ async def extend_time_handler(event):
             result_text += f"\n\n⚠️ Could not notify user: {str(e)[:50]}"
     else:
         result_text += "\n\n<i>User not in bot database - notification skipped.</i>"
-    
+
     await safe_edit(status_msg, result_text, parse_mode="html")
 
 # ================== BULK POINTS PURCHASE COMMAND ==================
@@ -1621,12 +1696,12 @@ async def extend_time_handler(event):
 async def buypoints_handler(event):
     status, time_left = get_sale_status()
     user_id = event.sender_id
-    
+
     if status == "before":
         return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await event.reply("❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.")
-    
+
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=event.chat_id,
@@ -1636,10 +1711,10 @@ async def buypoints_handler(event):
         ))
     except:
         pass
-    
-    user_data = users_col.find_one({"user_id": user_id})
+
+    user_data = get_user(user_id)
     current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     text = (
         f"💰 <b>Purchase Points Bundle</b>\n\n"
         f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
@@ -1648,10 +1723,11 @@ async def buypoints_handler(event):
         f"• 300 Points — 300.0 USDT\n"
         f"• 500 Points — 500.0 USDT\n"
         f"• 1000 Points — 1000.0 USDT\n\n"
-        f"<i>1 Point = 1 USDT value</i>\n\n"
+        f"<i>1 Point = 1 USDT value</i>\n"
+        f"<i>🎁 Spend over $200 and get +20% bonus points!</i>\n\n"
         f"Select a bundle:"
     )
-    
+
     buttons = [
         [
             Button.inline("200 Pts — $200", b"bulk_200"),
@@ -1663,7 +1739,7 @@ async def buypoints_handler(event):
         ],
         [Button.inline("🏠 Back to Home", b"back_to_start")]
     ]
-    
+
     try:
         await event.respond(text, parse_mode="html", buttons=buttons)
     except Exception as e:
@@ -1675,47 +1751,52 @@ async def bulk_points_handler(event):
     await event.answer()
     user_id = event.sender_id
     status, time_left = get_sale_status()
-    
+
     if status == "before":
         return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.", buttons=[[Button.inline("🏠 Back", b"back_to_start")]])
-    
+
     data_str = event.data.decode()
     package_key = data_str.replace("bulk_", "")
-    
+
     package = BULK_POINTS_PACKAGES.get(package_key)
     if not package:
         return await event.respond("Invalid package. Try again.")
-    
+
     amount = package["amount"]
-    points = package["points"]
+    base_points = package["points"]
     label = package["label"]
-    
+
+    total_points, bonus_points = calculate_bonus_points(amount, base_points)
+
     session = user_sessions.setdefault(user_id, {})
-    session["bulk_points"] = points
+    session["bulk_points"] = total_points
     session["bulk_amount"] = amount
     session["bulk_label"] = label
     session["product"] = "bulk_points"
-    
-    user_data = users_col.find_one({"user_id": user_id})
+
+    user_data = get_user(user_id)
     current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
+    bonus_line = f"\n🎁 Bonus (20%): <b>+{bonus_points:.0f} Points</b>" if bonus_points > 0 else ""
+
     text = (
         f"💰 <b>Points Bundle Purchase</b>\n\n"
         f"Bundle: <b>{label}</b>\n"
         f"Cost: <b>{amount} USDT</b>\n"
-        f"Points to receive: <b>{points}</b>\n\n"
+        f"Base Points: <b>{base_points}</b>{bonus_line}\n"
+        f"Total Points to receive: <b>{total_points:.0f}</b>\n\n"
         f"Current Balance: <b>{current_points:.2f} Points</b>\n"
-        f"After Purchase: <b>{current_points + points:.2f} Points</b>\n\n"
+        f"After Purchase: <b>{current_points + total_points:.2f} Points</b>\n\n"
         f"Proceed to payment?"
     )
-    
+
     buttons = [
         [Button.inline(f"💳 Pay {amount} USDT", b"bulk_pay_crypto")],
         [Button.inline("🔙 Back to Bundles", b"back_buypoints")]
     ]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 
@@ -1724,15 +1805,15 @@ async def back_buypoints_handler(event):
     await event.answer()
     user_id = event.sender_id
     status, time_left = get_sale_status()
-    
+
     if status == "before":
         return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
-    
-    user_data = users_col.find_one({"user_id": user_id})
+
+    user_data = get_user(user_id)
     current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     text = (
         f"💰 <b>Purchase Points Bundle</b>\n\n"
         f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
@@ -1741,10 +1822,11 @@ async def back_buypoints_handler(event):
         f"• 300 Points — 300.0 USDT\n"
         f"• 500 Points — 500.0 USDT\n"
         f"• 1000 Points — 1000.0 USDT\n\n"
-        f"<i>1 Point = 1 USDT value</i>\n\n"
+        f"<i>1 Point = 1 USDT value</i>\n"
+        f"<i>🎁 Spend over $200 and get +20% bonus points!</i>\n\n"
         f"Select a bundle:"
     )
-    
+
     buttons = [
         [
             Button.inline("200 Pts — $200", b"bulk_200"),
@@ -1756,7 +1838,7 @@ async def back_buypoints_handler(event):
         ],
         [Button.inline("🏠 Back to Home", b"back_to_start")]
     ]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 
@@ -1764,33 +1846,33 @@ async def back_buypoints_handler(event):
 async def bulk_pay_crypto_handler(event):
     await event.answer()
     status, _ = get_sale_status()
-    
+
     if status != "active":
         return await safe_edit(event, "❌ Sale is not active. You cannot purchase new points right now.", buttons=[[Button.inline("🏠 Back", b"back_to_start")]])
 
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     if not session or "bulk_amount" not in session:
         return await event.respond("Session expired. Please use /buypoints again.")
-    
+
     amount = session["bulk_amount"]
     points = session["bulk_points"]
     label = session["bulk_label"]
-    
+
     await safe_edit(event, "🔄 Creating invoice...", parse_mode="html")
-    
+
     try:
         resp = await asyncio.to_thread(create_invoice, amount)
     except Exception as e:
         logger.exception(f"Invoice error: {e}")
         await report_error_to_admin(e, "bulk_pay_crypto_handler create_invoice")
         return await safe_edit(event, "Failed to create invoice.")
-    
+
     data = resp if isinstance(resp, dict) else {}
     track_id = None
     pay_url = None
-    
+
     if isinstance(data, dict):
         track_id = data.get("track_id") or data.get("trackId") or data.get("trackid")
         pay_url = data.get("payment_url") or data.get("paymentUrl") or data.get("url")
@@ -1803,13 +1885,13 @@ async def bulk_pay_crypto_handler(event):
             if isinstance(el, dict):
                 track_id = el.get("track_id") or el.get("trackId") or el.get("trackid")
                 pay_url = el.get("payment_url") or el.get("paymentUrl") or el.get("url")
-    
+
     if not track_id or not pay_url:
         logger.error(f"Payment gateway returned unexpected response: {resp}")
         return await safe_edit(event, "Payment gateway error.")
-    
+
     session["track_id"] = track_id
-    
+
     text = (
         f"✅ <b>Points Bundle Purchase</b>\n"
         f"Bundle: <b>{label}</b>\n"
@@ -1818,7 +1900,7 @@ async def bulk_pay_crypto_handler(event):
         f"Click <b>Pay</b> to open OxaPay.\n"
         f"Payment window: 15 minutes."
     )
-    
+
     buttons = [
         [Button.url("🔗 Pay Now", pay_url)],
         [
@@ -1826,17 +1908,17 @@ async def bulk_pay_crypto_handler(event):
             Button.url("📢 Updates Channel", UPDATES_CHANNEL_LINK),
         ],
     ]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
-    
+
     task = asyncio.create_task(
         wait_for_payment(
-            user_id, 
-            track_id, 
-            label, 
+            user_id,
+            track_id,
+            label,
             0,
-            amount, 
-            is_bulk_points=True, 
+            amount,
+            is_bulk_points=True,
             points_amount=points
         )
     )
@@ -1850,7 +1932,7 @@ async def start_handler(event):
     user_id = event.sender_id
     sender = await event.get_sender()
     tg_username = getattr(sender, 'username', None)
-    
+
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=event.chat_id,
@@ -1862,12 +1944,12 @@ async def start_handler(event):
         pass
 
     try:
-        existing = users_col.find_one({"user_id": user_id})
+        existing = get_user(user_id)
     except:
         existing = None
 
     first_time = existing is None
-    
+
     args = event.message.message.split()
     referrer_id = None
     if len(args) > 1:
@@ -1883,15 +1965,16 @@ async def start_handler(event):
             "user_id": user_id,
             "tg_username": tg_username,
             "first_seen": datetime.now(timezone.utc),
+            "last_seen": datetime.now(timezone.utc),
             "points": 0.0
         }
         if referrer_id:
-            ref_user = users_col.find_one({"user_id": referrer_id})
+            ref_user = get_user(referrer_id)
             if ref_user:
                 new_user_doc["referrer_id"] = referrer_id
                 try:
                     await bot.send_message(
-                        referrer_id, 
+                        referrer_id,
                         f"<tg-emoji emoji-id='5208541126583136130'>🎉</tg-emoji> <b>New Referral!</b>\n\n"
                         f"A new user joined via your link.\n"
                         f"You will earn <b>10%</b> in points when they make a purchase.",
@@ -1900,18 +1983,24 @@ async def start_handler(event):
                 except Exception as e:
                     logger.error(f"Failed to notify referrer {referrer_id}: {e}")
 
-        users_col.insert_one(new_user_doc)
+        insert_user(new_user_doc)
     else:
-        update_data = {
-            "last_seen": datetime.now(timezone.utc)
-        }
-        if tg_username:
+        # Only touch the DB if something actually changed — avoids a write on every /start.
+        now_dt = datetime.now(timezone.utc)
+        update_data = {}
+
+        if tg_username and existing.get("tg_username") != tg_username:
             update_data["tg_username"] = tg_username
-            
-        users_col.update_one(
-            {"user_id": user_id},
-            {"$set": update_data}
-        )
+
+        last_seen_val = existing.get("last_seen")
+        if last_seen_val and last_seen_val.tzinfo is None:
+            last_seen_val = last_seen_val.replace(tzinfo=timezone.utc)
+
+        if not last_seen_val or (now_dt - last_seen_val) > timedelta(minutes=10):
+            update_data["last_seen"] = now_dt
+
+        if update_data:
+            update_user(user_id, {"$set": update_data})
 
     sale_status, time_left = get_sale_status()
 
@@ -1939,12 +2028,12 @@ async def start_handler(event):
     account_row = []
     if not first_time:
         account_row.append(Button.inline("✏️ Change Username", b"edit_username"))
-    
+
     if account_row:
         buttons.append(account_row)
-    
+
     buttons.append([Button.inline("💰 Buy Points Bundle", b"menu_buypoints")])
-    
+
     if not first_time:
         buttons.append([Button.inline("🗑 Cancel Subscription", b"terminate_sub_menu")])
 
@@ -1974,21 +2063,21 @@ async def help_handler(event):
 async def referral_menu_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
-    user_data = users_col.find_one({"user_id": user_id})
+
+    user_data = get_user(user_id)
     points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     try:
-        ref_count = users_col.count_documents({"referrer_id": user_id})
+        ref_count = sum(1 for d in users_cache.values() if d.get("referrer_id") == user_id)
     except:
         ref_count = 0
-    
+
     if not bot_username:
          me = await bot.get_me()
          globals()['bot_username'] = me.username
-         
+
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
-    
+
     text = (
         "<b><tg-emoji emoji-id='5411271889421086677'>🎁</tg-emoji> Referral Program</b>\n\n"
         "Invite friends and earn <b>10%</b> of their spendings as points!\n"
@@ -1999,9 +2088,9 @@ async def referral_menu_handler(event):
         f"<code>{ref_link}</code>\n\n"
         "Share this link. You get notified instantly when someone joins."
     )
-    
+
     buttons = [[Button.inline("🏠 Back to Home", b"back_to_start")]]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 # --- BUY POINTS MENU HANDLER ---
@@ -2011,15 +2100,15 @@ async def menu_buypoints_handler(event):
     await event.answer()
     user_id = event.sender_id
     status, time_left = get_sale_status()
-    
+
     if status == "before":
         return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new points. You can only use existing points to buy subscriptions.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
 
-    user_data = users_col.find_one({"user_id": user_id})
+    user_data = get_user(user_id)
     current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     text = (
         f"💰 <b>Purchase Points Bundle</b>\n\n"
         f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
@@ -2028,10 +2117,11 @@ async def menu_buypoints_handler(event):
         f"• 300 Points — 300.0 USDT\n"
         f"• 500 Points — 500.0 USDT\n"
         f"• 1000 Points — 1000.0 USDT\n\n"
-        f"<i>1 Point = 1 USDT value</i>\n\n"
+        f"<i>1 Point = 1 USDT value</i>\n"
+        f"<i>🎁 Spend over $200 and get +20% bonus points!</i>\n\n"
         f"Select a bundle:"
     )
-    
+
     buttons = [
         [
             Button.inline("200 Pts — $200", b"bulk_200"),
@@ -2043,7 +2133,7 @@ async def menu_buypoints_handler(event):
         ],
         [Button.inline("🏠 Back to Home", b"back_to_start")]
     ]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"back_to_start"))
@@ -2052,7 +2142,7 @@ async def back_start_handler(event):
     user_id = event.sender_id
 
     try:
-        existing = users_col.find_one({"user_id": user_id})
+        existing = get_user(user_id)
     except:
         existing = None
 
@@ -2060,7 +2150,7 @@ async def back_start_handler(event):
 
     if sale_status == "before":
         try:
-            await event.delete() 
+            await event.delete()
         except:
             pass
         return await handle_sale_before_state(event, time_left, user_id)
@@ -2086,12 +2176,12 @@ async def back_start_handler(event):
     account_row = []
     if existing:
         account_row.append(Button.inline("✏️ Change Username", b"edit_username"))
-    
+
     if account_row:
         buttons.append(account_row)
-    
+
     buttons.append([Button.inline("💰 Buy Points Bundle", b"menu_buypoints")])
-    
+
     if existing:
         buttons.append([Button.inline("🗑 Cancel Subscription", b"terminate_sub_menu")])
 
@@ -2101,7 +2191,7 @@ async def back_start_handler(event):
     ])
 
     try:
-        await event.delete() 
+        await event.delete()
     except:
         pass
 
@@ -2125,15 +2215,15 @@ async def buy_sub_menu_handler(event):
 async def buy_product_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
+
     data_str = event.data.decode()
     product_type = "claimer"
     product_display = "Code Rebate Claimer"
-    
+
     if "api_claimer" in data_str:
         product_type = "api_claimer"
         product_display = "API Rebate Claimer"
-    
+
     session = user_sessions.setdefault(user_id, {})
     session["expecting_username"] = True
     session["product"] = product_type
@@ -2155,7 +2245,7 @@ async def buy_product_handler(event):
             "• <code>@alice123</code>\n\n"
             "Do NOT send profile links or screenshots. After you send the username you'll be asked to confirm it."
         )
-    
+
     await safe_edit(event, text, parse_mode="html")
 
 # ================== EDITED USERNAME HANDLER LOGIC ==================
@@ -2165,18 +2255,18 @@ async def edit_username_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.setdefault(user_id, {})
-    
+
     session.pop("expecting_username", None)
-    
+
     session["expecting_rename_old"] = True
     session["expecting_rename_new"] = False
-    
+
     text = (
         "<b><tg-emoji emoji-id='5395444784611480792'>✏️</tg-emoji> Change Username — Step 1</b>\n\n"
         "Please enter the <b>OLD</b> Stake username (the one you want to replace).\n\n"
         "Example: <code>alice123</code>"
     )
-    
+
     await safe_edit(event, text, parse_mode="html")
 
 @bot.on(events.CallbackQuery(data=b"edit_cancel"))
@@ -2195,16 +2285,16 @@ async def edit_cancel_handler(event):
 async def terminate_sub_menu_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
-    user_doc = users_col.find_one({"user_id": user_id})
+
+    user_doc = get_user(user_id)
     if not user_doc or not user_doc.get("username"):
         await safe_edit(event, "❌ No username linked to your account. Cannot terminate.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
         return
 
     username = user_doc.get("username").lstrip("@")
-    
+
     active_details = None
-    
+
     data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
     if data_claimer:
         users = _extract_active_users_list(data_claimer)
@@ -2225,11 +2315,11 @@ async def terminate_sub_menu_handler(event):
                     if expires:
                         active_details = (API_CLAIMER_AUTH_URL, expires, "API Rebate Claimer")
                         break
-    
+
     if not active_details:
         session = user_sessions.setdefault(user_id, {})
         session["expecting_term_username"] = True
-        
+
         text = (
             f"User: <code>@{username}</code>\n\n"
             "❌ <b>No active subscription found for this username.</b>\n\n"
@@ -2247,7 +2337,7 @@ async def terminate_sub_menu_handler(event):
     now = datetime.now(timezone.utc)
     if expires_dt.tzinfo is None:
         expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-        
+
     if expires_dt > now:
         remaining_secs = (expires_dt - now).total_seconds()
         remaining_hours = remaining_secs / 3600.0
@@ -2262,15 +2352,15 @@ async def terminate_sub_menu_handler(event):
             refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
         else:
             refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
-            
+
     refund_amount = round(refund_amount, 2)
-    
+
     session = user_sessions.setdefault(user_id, {})
     session["term_username"] = username
     session["term_api"] = api_url
     session["term_refund"] = refund_amount
     session["term_product"] = product_name
-    
+
     text = (
         f"<b>🗑 Cancel Subscription</b>\n\n"
         f"Product: <b>{product_name}</b>\n"
@@ -2280,7 +2370,7 @@ async def terminate_sub_menu_handler(event):
         "<i>(Based on remaining time)</i>\n\n"
         "Are you sure? This will instantly stop the bot and remove your username."
     )
-    
+
     buttons = [
         [Button.inline(f"✅ Confirm — Refund {refund_amount} Pts", b"terminate_sub_execute")],
         [Button.inline("❌ Go Back", b"back_to_start")]
@@ -2291,9 +2381,9 @@ async def terminate_sub_menu_handler(event):
 async def terminate_force_db_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
-    users_col.update_one({"user_id": user_id}, {"$unset": {"username": ""}})
-    
+
+    update_user(user_id, {"$unset": {"username": ""}})
+
     await safe_edit(event, "✅ Username removed from database.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
 
 @bot.on(events.CallbackQuery(data=b"terminate_sub_execute"))
@@ -2301,21 +2391,21 @@ async def terminate_execute_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id, {})
-    
+
     username = session.get("term_username")
     api_url = session.get("term_api")
     refund = session.get("term_refund", 0.0)
     product_name = session.get("term_product", "Unknown")
-    
+
     if not username or not api_url:
         await safe_edit(event, "Session expired. Please try again.", buttons=[[Button.inline("🏠 Back to Home", b"back_to_start")]])
         return
-        
+
     await safe_edit(event, "⏳ Terminating subscription on all services...", parse_mode="html")
 
     # ===== CALL ALL PRODUCT APIs TO DELETE USER =====
     all_api_urls = [CLAIMER_API_URL, API_CLAIMER_AUTH_URL]
-    
+
     seen_urls = set()
     unique_api_urls = []
     for u in all_api_urls:
@@ -2342,7 +2432,7 @@ async def terminate_execute_handler(event):
                 mirror = deployed_app.get("mirror_site", "?")
                 if app_name:
                     delete_ok, delete_resp = await asyncio.to_thread(delete_deployed_app, app_name)
-                    
+
                     now_dt = datetime.now(timezone.utc)
                     deployed_apps_col.update_one(
                         {"app_name": app_name},
@@ -2360,7 +2450,7 @@ async def terminate_execute_handler(event):
                             "deletion_reason": "user_terminated"
                         }}
                     )
-                    
+
                     status_icon = "✅" if delete_ok else "⚠️"
                     container_lines.append(f"{status_icon} <code>{app_name}</code> [{mirror}]")
                     logger.info(f"[TERMINATE] Container {app_name} deletion: {'ok' if delete_ok else 'failed'} — {delete_resp}")
@@ -2369,14 +2459,14 @@ async def terminate_execute_handler(event):
         await report_error_to_admin(e, "[TERMINATE] Failed to delete deployed apps during termination")
 
     # ===== UPDATE DB: REFUND POINTS AND REMOVE USERNAME =====
-    user_doc = users_col.find_one({"user_id": user_id})
+    user_doc = get_user(user_id)
     current_db_user = user_doc.get("username", "").lstrip("@") if user_doc else ""
-    
+
     update_query = {"$inc": {"points": refund}}
     if current_db_user.lower() == username.lower().lstrip("@"):
         update_query["$unset"] = {"username": ""}
-        
-    users_col.update_one({"user_id": user_id}, update_query)
+
+    update_user(user_id, update_query)
 
     # ===== BUILD RESULT MESSAGE =====
     if any_success:
@@ -2401,7 +2491,7 @@ async def terminate_execute_handler(event):
             "❌ Failed to delete user from all servers. Please contact support.",
             buttons=[[Button.url("🛠 Contact Support", SUPPORT_CHAT_LINK)]]
         )
-        
+
     session.pop("term_username", None)
     session.pop("term_api", None)
     session.pop("term_refund", None)
@@ -2413,13 +2503,13 @@ async def terminate_execute_handler(event):
 async def text_input_handler(event):
     user_id = event.sender_id
     session = user_sessions.setdefault(user_id, {})
-    
+
     raw_text = event.raw_text.strip()
 
     # --- HANDLE SESSION TOKEN (API KEY) FOR API CLAIMER ---
     if session.get("expecting_session_token"):
         session["expecting_session_token"] = False
-        
+
         if len(raw_text) < 20:
             await event.respond(
                 "❌ Invalid API key. Your Stake API key should be a long string.\n\n"
@@ -2428,12 +2518,12 @@ async def text_input_handler(event):
             )
             session["expecting_session_token"] = True  # keep waiting
             return
-        
+
         session["session_token"] = raw_text
-        
+
         username_clean = session.get("username", "UNKNOWN")
         prod_name = "API Rebate Claimer"
-        
+
         text = (
             f"✅ <b>API Key Saved!</b> [{API_CLAIMER_MIRROR_SITE}]\n\n"
             f"Username: <code>@{username_clean}</code>\n"
@@ -2448,13 +2538,13 @@ async def text_input_handler(event):
                 Button.url("📢 Updates Channel", UPDATES_CHANNEL_LINK),
             ],
         ]
-        
+
         await event.respond(text, parse_mode="html", buttons=buttons)
         return
 
     if raw_text.startswith("/"):
         return
-    
+
     import re
     username_pattern = r"^[A-Za-z0-9_@]{3,51}$"
     if not re.match(username_pattern, raw_text):
@@ -2466,9 +2556,9 @@ async def text_input_handler(event):
     if session.get("expecting_term_username"):
         session["expecting_term_username"] = False
         target_username = username_clean
-        
+
         active_details = None
-        
+
         data_claimer = await asyncio.to_thread(get_active_users, CLAIMER_API_URL)
         if data_claimer:
             users = _extract_active_users_list(data_claimer)
@@ -2489,7 +2579,7 @@ async def text_input_handler(event):
                         if expires:
                             active_details = (API_CLAIMER_AUTH_URL, expires, "API Rebate Claimer")
                             break
-        
+
         if not active_details:
             await event.respond(
                 f"❌ No active subscription found for <code>@{target_username}</code> either.",
@@ -2502,7 +2592,7 @@ async def text_input_handler(event):
         now = datetime.now(timezone.utc)
         if expires_dt.tzinfo is None:
             expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-            
+
         if expires_dt > now:
             remaining_secs = (expires_dt - now).total_seconds()
             remaining_hours = remaining_secs / 3600.0
@@ -2517,14 +2607,14 @@ async def text_input_handler(event):
                 refund_amount = remaining_hours * REFUND_RATE_API_CLAIMER_PER_HOUR
             else:
                 refund_amount = remaining_hours * REFUND_RATE_CLAIMER_PER_HOUR
-                
+
         refund_amount = round(refund_amount, 2)
-        
+
         session["term_username"] = target_username
         session["term_api"] = api_url
         session["term_refund"] = refund_amount
         session["term_product"] = product_name
-        
+
         text = (
             f"<b>🗑 Cancel Subscription (Old Username)</b>\n\n"
             f"Product: <b>{product_name}</b>\n"
@@ -2534,7 +2624,7 @@ async def text_input_handler(event):
             "<i>(Based on remaining time)</i>\n\n"
             "Are you sure? This will instantly stop the bot."
         )
-        
+
         buttons = [
             [Button.inline(f"✅ Confirm — Refund {refund_amount} Pts", b"terminate_sub_execute")],
             [Button.inline("❌ Go Back", b"back_to_start")]
@@ -2547,7 +2637,7 @@ async def text_input_handler(event):
         session["expecting_rename_old"] = False
         session["expecting_rename_new"] = True
         session["rename_old_value"] = username_clean
-        
+
         await event.respond(
             f"✅ Old Username identified: <code>@{username_clean}</code>\n\n"
             "<b>Step 2:</b> Now send the <b>NEW</b> Stake username.",
@@ -2559,10 +2649,10 @@ async def text_input_handler(event):
     if session.get("expecting_rename_new"):
         old_username = session.get("rename_old_value")
         new_username = username_clean
-        
+
         session["expecting_rename_new"] = False
         session.pop("rename_old_value", None)
-        
+
         if not old_username:
              await event.respond("❌ Session expired or invalid state. Please try again from the menu.", parse_mode="html")
              return
@@ -2571,7 +2661,7 @@ async def text_input_handler(event):
 
         try:
             resp = await asyncio.to_thread(rename_user_api, old_username, new_username)
-            
+
             if isinstance(resp, dict) and resp.get("ok") is False:
                 await event.respond(f"❌ Rename API reported failure: {resp}\n\nLocal username not changed.", parse_mode="html")
                 return
@@ -2579,22 +2669,23 @@ async def text_input_handler(event):
             try:
                 users_col.update_many({"username": old_username}, {"$set": {"username": new_username}})
                 users_col.update_many(
-                    {"username": old_username}, 
+                    {"username": old_username},
                     {"$set": {"username.$": new_username}}
                 )
                 session["username"] = new_username
-                
+                get_user(user_id, refresh=True)  # resync cache after the direct update_many writes above
+
             except Exception as e:
                 logger.exception("Failed to update DB entries after rename API success.")
                 await report_error_to_admin(e, "Failed to update DB entries after rename API success.")
-            
+
             await event.respond(f"✅ Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.", parse_mode="html")
-            
+
         except Exception as e:
             logger.exception("Rename process failed.")
             await report_error_to_admin(e, "Rename process failed")
             await event.respond(f"❌ Error during rename: {e}", parse_mode="html")
-        
+
         return
 
     # --- STANDARD PURCHASE FLOW ---
@@ -2603,7 +2694,7 @@ async def text_input_handler(event):
 
     session["pending_username"] = username_clean
     session["expecting_username"] = False
-    
+
     prod = session.get("product", "claimer")
     if prod == "api_claimer":
         prod_name = "API Rebate Claimer"
@@ -2630,15 +2721,15 @@ async def skip_session_token_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     if not session:
         return await event.respond("Session expired. Restart with /start.")
-    
+
     session["expecting_session_token"] = False
-    
+
     username_clean = session.get("username", "UNKNOWN")
     prod_name = "API Rebate Claimer"
-    
+
     text = (
         f"<b>⚠️ API Key Skipped</b>\n\n"
         f"Username: <code>@{username_clean}</code>\n"
@@ -2654,7 +2745,7 @@ async def skip_session_token_handler(event):
             Button.url("📢 Updates Channel", UPDATES_CHANNEL_LINK),
         ],
     ]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"confirm_username_no"))
@@ -2673,7 +2764,7 @@ async def confirm_no_handler(event):
         "• <code>@alice123</code>\n\n"
         "Send only the username (no links)."
     )
-    
+
     await safe_edit(event, text, parse_mode="html")
 
 @bot.on(events.CallbackQuery(data=b"confirm_username_yes"))
@@ -2681,7 +2772,7 @@ async def confirm_yes_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     sender = await event.get_sender()
     tg_username = getattr(sender, 'username', None)
 
@@ -2701,7 +2792,7 @@ async def confirm_yes_handler(event):
         update_data = {"username": username_clean}
         if tg_username:
             update_data["tg_username"] = tg_username
-        users_col.update_one({"user_id": user_id}, {"$set": update_data}, upsert=True)
+        update_user(user_id, {"$set": update_data}, upsert=True)
     except Exception as e:
         logger.exception("Failed to persist username to DB on confirm.")
         await report_error_to_admin(e, "confirm_username_yes DB update")
@@ -2726,7 +2817,7 @@ async def confirm_yes_handler(event):
             [Button.inline("❌ Cancel", b"back_to_start")]
         ]
         session["expecting_session_token"] = True
-        
+
         await safe_edit(event, text, parse_mode="html", buttons=buttons)
         return
 
@@ -2735,9 +2826,9 @@ async def confirm_yes_handler(event):
         f"Product: <b>{prod_name}</b>\n\n"
         "Choose payment method:"
     )
-    
+
     pay_btn_text = "💳 Buy Sub (Crypto/Points)"
-    
+
     buttons = [
         [Button.inline(pay_btn_text, b"buy_crypto")],
         [Button.inline("💵 Pay with UPI", b"buy_upi")],
@@ -2754,19 +2845,19 @@ async def buy_upi_handler(event):
     await event.answer()
     user_id = event.sender_id
     status, time_left = get_sale_status()
-    
+
     if status == "before":
         return await handle_sale_before_state(event, time_left, user_id)
     elif status == "after":
         return await safe_edit(event, "❌ Sale expired. You can no longer buy new subscriptions using UPI. You can only use existing points.", buttons=[[Button.inline("🏠 Back", b"back_to_start")]])
-    
+
     text = (
         "<tg-emoji emoji-id='6325705628291436771'>💵</tg-emoji> <b>Pay with UPI</b>\n\n"
         "DM admin and mention your Stake username:\n"
         f"👉 <a href=\"{UPI_DM_LINK}\">@Rabit0505</a>"
     )
     buttons = [[Button.url("💬 DM for UPI Payment", UPI_DM_LINK)]]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"buy_crypto"))
@@ -2785,21 +2876,20 @@ async def buy_crypto_handler(event):
         prod_name = "Code Rebate Claimer"
 
     header = f"⚡ <b>{prod_name} Plans</b>"
-    
+
     text = (
         f"{header}\n"
         "💳 <b>Select a Plan</b>\n\n"
         "Plans:\n"
     )
-    
+
     buttons = []
-    p24h = PLANS["24h"]
 
-    text += f"• {p24h['label']:<20} — {p24h['amount']} USDT\n"
-
-    buttons.append([
-        Button.inline(f"{p24h['label']} — ${p24h['amount']}", b"plan_24h"),
-    ])
+    for plan_key, plan_data in PLANS.items():
+        text += f"• {plan_data['label']:<20} — {plan_data['amount']} USDT\n"
+        buttons.append([
+            Button.inline(f"{plan_data['label']} — ${plan_data['amount']}", f"plan_{plan_key}".encode())
+        ])
 
     text += "\nSelect your plan:"
 
@@ -2815,7 +2905,7 @@ async def plan_handler(event):
         return await event.respond("Restart with /start and send your username first.")
 
     plan_key_raw = event.data.decode().split("_", 1)[1]
-    
+
     prod = session.get("product", "claimer")
 
     if plan_key_raw.startswith("api_"):
@@ -2824,7 +2914,7 @@ async def plan_handler(event):
     plan = PLANS.get(plan_key_raw)
     if not plan:
         return await event.respond("Invalid plan. Try again.")
-        
+
     amount = plan["amount"]
     label = plan["label"]
     hours = plan["hours"]
@@ -2835,9 +2925,9 @@ async def plan_handler(event):
     session["selected_label"] = label
     session["selected_hours"] = hours
 
-    user_data = users_col.find_one({"user_id": user_id})
+    user_data = get_user(user_id)
     user_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     if prod == "api_claimer":
         prod_name = "API Rebate Claimer"
     else:
@@ -2854,16 +2944,16 @@ async def plan_handler(event):
         f"{points_text}"
         "Select payment method:"
     )
-    
+
     buttons = []
-    
+
     status, _ = get_sale_status()
     if status == "active":
         buttons.append([Button.inline(f"💳 Pay Crypto — ${amount}", b"pay_method_crypto")])
-    
+
     buttons.append([Button.inline(f"💰 Pay Points — {amount} Pts", b"pay_method_points")])
     buttons.append([Button.inline("🔙 Back to Plans", b"buy_crypto")])
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.CallbackQuery(data=b"pay_method_points"))
@@ -2871,43 +2961,43 @@ async def pay_points_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     if not session or "selected_amount" not in session:
         return await event.respond("Session expired. Please restart.")
-        
+
     prod = session.get("product", "claimer")
-        
+
     amount = session["selected_amount"]
     label = session["selected_label"]
     hours = session["selected_hours"]
     username_clean = session["username"]
-    
+
     if prod == "api_claimer":
         api_url = API_CLAIMER_AUTH_URL
         prod_name = "API Rebate Claimer"
     else:
         api_url = CLAIMER_API_URL
         prod_name = "Code Rebate Claimer"
-    
-    user_data = users_col.find_one({"user_id": user_id})
+
+    user_data = get_user(user_id)
     user_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     if user_points < amount:
         await event.answer(f"❌ Insufficient Points! You need {amount} points.", alert=True)
         return
-        
-    users_col.update_one({"user_id": user_id}, {"$inc": {"points": -amount}})
-    
+
+    update_user(user_id, {"$inc": {"points": -amount}})
+
     await safe_edit(event, f"🔄 Activating {prod_name} subscription...", parse_mode="html")
-    
+
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
-    
+
     if activation_ok:
         try:
             await event.delete()
         except:
             pass
-        
+
         if prod == "api_claimer":
             # === API CLAIMER: SINGLE DEPLOY CONTAINER ===
             session_token = session.get("session_token")
@@ -2973,14 +3063,14 @@ async def pay_points_handler(event):
                 f"Duration: <b>{hours} hours</b>.",
                 parse_mode="html"
             )
-            
+
             forwards = [CLAIMER_FORWARD_1, CLAIMER_FORWARD_2]
             for chat, msg_id in forwards:
                 try:
                     try:
                         source_entity = await bot.get_entity(chat)
                     except Exception as e:
-                        source_entity = chat 
+                        source_entity = chat
 
                     fwd = await bot.forward_messages(entity=user_id, messages=msg_id, from_peer=source_entity)
                     if isinstance(fwd, list):
@@ -2993,7 +3083,7 @@ async def pay_points_handler(event):
                     logger.exception(f"Forward error for {chat} msg {msg_id}: {e}")
                     await report_error_to_admin(e, f"Forward error for {chat} msg {msg_id}")
     else:
-        users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
+        update_user(user_id, {"$inc": {"points": amount}})
         try:
             await event.respond("❌ Activation failed. Points refunded. Contact support.", parse_mode="html")
         except:
@@ -3002,21 +3092,21 @@ async def pay_points_handler(event):
 @bot.on(events.CallbackQuery(data=b"pay_method_crypto"))
 async def pay_crypto_inv_handler(event):
     await event.answer()
-    
+
     status, _ = get_sale_status()
     if status != "active":
         return await safe_edit(event, "❌ Sale is not active. Crypto purchases are currently disabled.", buttons=[[Button.inline("🏠 Back", b"back_to_start")]])
 
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     if not session or "selected_amount" not in session:
         return await event.respond("Session expired.")
-        
+
     amount = session["selected_amount"]
     label = session["selected_label"]
     hours = session["selected_hours"]
-    
+
     prod = session.get("product", "claimer")
     if prod == "api_claimer":
         prod_name = "API Rebate Claimer"
@@ -3058,7 +3148,7 @@ async def pay_crypto_inv_handler(event):
         return await safe_edit(event, "Payment gateway error.")
 
     session["track_id"] = track_id
-    
+
     text = (
         f"✅ Product: <b>{prod_name}</b>\n"
         f"✅ Plan: <b>{label}</b>\n"
@@ -3074,7 +3164,7 @@ async def pay_crypto_inv_handler(event):
             Button.url("📢 Updates Channel", UPDATES_CHANNEL_LINK),
         ],
     ]
-    
+
     await safe_edit(event, text, parse_mode="html", buttons=buttons)
 
     task = asyncio.create_task(wait_for_payment(user_id, track_id, label, hours, amount))
@@ -3094,7 +3184,7 @@ async def broadcast_handler(event):
     if not orig:
         return await event.reply("Message not found.")
 
-    cursor = list(users_col.find({}, {"user_id": 1}))
+    cursor = list(users_cache.values()) if users_cache else list(users_col.find({}, {"user_id": 1}))
     total = len(cursor)
 
     for u in cursor:
@@ -3108,6 +3198,7 @@ async def broadcast_handler(event):
 
 def main():
     logger.info("Rebate Buy Bot (Single Deployer) is running...")
+    load_users_cache()
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
