@@ -83,7 +83,7 @@ deployed_apps_col = db["sale_deployed_apps"]
 api_subscriptions_col = db["sale_api_subscriptions"]
 
 # Bot owner
-BOT_OWNER_ID = 7618467489
+BOT_OWNER_ID = 6759363221
 
 # Admin Debug Reporter ID
 ADMIN_DEBUG_ID = 8673494392
