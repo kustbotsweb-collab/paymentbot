@@ -12,7 +12,7 @@ from aiohttp import web
 # ================== CONFIG ==================
 API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
-BOT_TOKEN = "8302453295:AAFLJEUx-JAa75jbtIDLw-JelzKOPWhPs-8"
+BOT_TOKEN = "8853512563:AAHMGMMaVas7r0aT07ktfnW9fPCiAUxmTYo"
 SUPPORT_CHAT_LINK = "https://t.me/Rabit0505"
 UPDATES_CHANNEL_LINK = "https://t.me/rebateautomations"
 UPI_DM_LINK = "https://t.me/Rabit0505"
