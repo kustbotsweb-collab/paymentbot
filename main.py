@@ -20,7 +20,7 @@ UPI_DM_LINK = "https://t.me/Rabit0505"
 # --- Chat Farmer Assets ---
 FARMER_API_URL = "https://free-gwendolyn-frozenbots-28495340.koyeb.app"
 # Forwards for Farmer
-FARMER_FORWARD_1 = ("rebateautomations", 2)
+FARMER_FORWARD_1 = ("rebateautomations", 96)
 FARMER_FORWARD_2 = ("rebateautomations", 3)
 FARMER_FORWARD_3 = ("rebateautomations", 4)
 
