@@ -13,19 +13,16 @@ from aiohttp import web
 API_ID = 29568441
 API_HASH = "b32ec0fb66d22da6f77d355fbace4f2a"
 BOT_TOKEN = "8302453295:AAFLJEUx-JAa75jbtIDLw-JelzKOPWhPs-8"
-SUPPORT_CHAT_LINK = "https://t.me/KustXoffical"
-UPDATES_CHANNEL_LINK = "https://t.me/kustbots"
-UPI_DM_LINK = "https://t.me/KustXoffical"
+SUPPORT_CHAT_LINK = "https://t.me/Rabit0505"
+UPDATES_CHANNEL_LINK = "https://t.me/rebateautomations"
+UPI_DM_LINK = "https://t.me/Rabit0505"
 
 # --- Chat Farmer Assets ---
 FARMER_API_URL = "https://free-gwendolyn-frozenbots-28495340.koyeb.app"
 # Forwards for Farmer
-FARMER_FORWARD_1 = ("kustvault", 2)
-FARMER_FORWARD_2 = ("kustvault", 3)
-FARMER_FORWARD_3 = ("kustvault", 4)
-
-# Start image
-START_IMAGE_URL = "https://filehosting.kustbotsweb.workers.dev/f/3e5a6eb1e2444c14bc87a40b4b6a9973"
+FARMER_FORWARD_1 = ("rebateautomations", 2)
+FARMER_FORWARD_2 = ("rebateautomations", 3)
+FARMER_FORWARD_3 = ("rebateautomations", 4)
 
 # MongoDB
 MONGO_URL = "mongodb+srv://kustbotsweb_db_user:z7YqNFmFOvVHKl4B@kust-payments.hiin3lu.mongodb.net/?appName=kust-payments"
@@ -78,9 +75,9 @@ PAYMENT_TIMEOUT = 15 * 60
 POLL_INTERVAL = 10
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("stake_payment_bot")
+logger = logging.getLogger("rebate_chat_bot")
 
-bot = TelegramClient("stake_farmer_payment_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+bot = TelegramClient("rebate_chat_bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
 user_sessions = {}
 user_tasks = {}
@@ -132,7 +129,7 @@ def activate_subscription(username_with_at: str, hours: int, api_url: str):
             "admin": "admin1234",
             "duration": hours
         }
-        url = f"{api_url}/auth" 
+        url = f"{api_url}/auth"
         r = requests.get(url, params=params, timeout=120)
         r.raise_for_status()
         logger.info(f"[ACTIVATE] Activated for {username_with_at} on {api_url}. Response: {r.text}")
@@ -169,7 +166,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
         return False
 
     product_type = session.get("product", "farmer")
-    
+
     # Handle bulk points purchase
     if is_bulk_points:
         product_name = "Points Purchase"
@@ -192,7 +189,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
             logger.info(f"Invoice {track_id} status check: {status}")
 
             if status == "paid":
-                
+
                 # === BULK POINTS PURCHASE ===
                 if is_bulk_points:
                     users_col.update_one(
@@ -200,10 +197,10 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         {"$inc": {"points": points_amount}},
                         upsert=True
                     )
-                    
+
                     user_record = users_col.find_one({"user_id": user_id})
                     new_balance = user_record.get("points", 0.0) if user_record else points_amount
-                    
+
                     await bot.send_message(
                         user_id,
                         f"✅ <b>Payment Confirmed!</b>\n\n"
@@ -213,7 +210,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         parse_mode="html"
                     )
                     return True
-                
+
                 username_clean = session.get("username", "UNKNOWN")
 
                 activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
@@ -264,7 +261,7 @@ async def wait_for_payment(user_id: int, track_id: str, plan_label: str, hours: 
                         try:
                             source_entity = await bot.get_entity(chat)
                         except Exception as e:
-                            source_entity = chat 
+                            source_entity = chat
                         fwd = await bot.forward_messages(entity=user_id, messages=msg_id, from_peer=source_entity)
                         if isinstance(fwd, list):
                             fwd = fwd[0]
@@ -305,13 +302,13 @@ def rename_user_api(old_username: str, new_username: str):
         old_username = f"@{old_username}"
     if new_username and not new_username.startswith("@"):
         new_username = f"@{new_username}"
-        
+
     data = {"old_username": old_username, "new_username": new_username, "admin": "admin1234"}
-    
+
     endpoints = [
         f"{FARMER_API_URL}/rename_user"
     ]
-    
+
     success = False
     details = ""
     for ep in endpoints:
@@ -323,7 +320,7 @@ def rename_user_api(old_username: str, new_username: str):
                 details += f"Fail {ep}: {r.status_code} "
         except Exception as e:
             details += f"Err {ep}: {str(e)} "
-            
+
     if success:
         return {"ok": True}
     else:
@@ -332,9 +329,9 @@ def rename_user_api(old_username: str, new_username: str):
 def delete_user_api(username: str, api_url: str):
     if username and not username.startswith("@"):
         username = f"@{username}"
-        
+
     params = {"username": username, "admin": "admin1234"}
-    
+
     try:
         r = requests.post(f"{api_url}/delete_user", params=params, timeout=10)
         r.raise_for_status()
@@ -345,9 +342,9 @@ def delete_user_api(username: str, api_url: str):
             r = requests.get(f"{api_url}/delete_user", params=params, timeout=10)
             r.raise_for_status()
             return True
-        except Exception as e2: 
+        except Exception as e2:
             logger.error(f"Failed delete_user GET on {api_url}: {e2}")
-            
+
     return False
 
 # ================== ACTIVE USERS CHECKER ==================
@@ -385,7 +382,7 @@ def _extract_active_users_list(data):
 async def check_active_users_loop():
     await asyncio.sleep(5)
     logger.info("Active users reminder loop started (60s interval, 10min reminder).")
-    
+
     api_sources = [
         {"name": "Chat Farmer",  "url": FARMER_API_URL},
     ]
@@ -512,7 +509,7 @@ async def add_points_handler(event):
 
     try:
         users_col.update_one({"user_id": target_user_id}, {"$inc": {"points": amount}})
-        
+
         updated_user = users_col.find_one({"user_id": target_user_id})
         new_balance = updated_user.get("points", 0.0)
 
@@ -545,7 +542,7 @@ async def extend_time_handler(event):
         return
 
     args = event.message.message.split()
-    
+
     if len(args) < 3:
         return await event.reply(
             "❌ <b>Usage:</b> <code>/extend &lt;username/userid&gt; &lt;hours&gt;</code>\n\n"
@@ -553,20 +550,20 @@ async def extend_time_handler(event):
             "<code>/extend @alice123 24</code>\n",
             parse_mode="html"
         )
-        
+
     target_arg = args[1]
     hours_arg = args[2]
-    
+
     try:
         hours_to_add = int(hours_arg)
         if hours_to_add <= 0:
             raise ValueError("Hours must be positive")
     except ValueError:
         return await event.reply("❌ Invalid hours. Please enter a positive number.", parse_mode="html")
-        
+
     target_user_id = None
     target_username = None
-    
+
     if target_arg.isdigit():
         target_user_id = int(target_arg)
         user_record = users_col.find_one({"user_id": target_user_id})
@@ -579,32 +576,32 @@ async def extend_time_handler(event):
         user_record = users_col.find_one({"username": target_username})
         if user_record:
             target_user_id = user_record.get("user_id")
-            
+
     status_msg = await event.reply(f"🔄 Extending subscription for <code>@{target_username}</code>...", parse_mode="html")
-    
+
     results = []
     product_name = "Chat Farmer"
     api_url = FARMER_API_URL
-        
+
     try:
         success = await asyncio.to_thread(activate_subscription, f"@{target_username}", hours_to_add, api_url)
-        
+
         if success:
             results.append(f"✅ <b>{product_name}</b>: Extended by {hours_to_add} hours")
         else:
             results.append(f"❌ <b>{product_name}</b>: Failed to extend")
-            
+
     except Exception as e:
         logger.exception(f"Error extending {product_name} for {target_username}: {e}")
         results.append(f"❌ <b>{product_name}</b>: Error - {str(e)[:50]}")
-            
+
     result_text = (
         f"⏰ <b>Subscription Extension Result</b>\n\n"
         f"User: <code>@{target_username}</code>\n"
         f"Hours Added: <b>{hours_to_add}</b>\n\n"
     )
     result_text += "\n".join(results)
-    
+
     if target_user_id:
         try:
             api_data = await asyncio.to_thread(get_active_users, FARMER_API_URL)
@@ -614,7 +611,7 @@ async def extend_time_handler(event):
                     if u.get("username", "").lower().lstrip("@") == target_username.lower():
                         new_expiry_str = u.get("expires", "N/A")
                         break
-                        
+
             await bot.send_message(
                 target_user_id,
                 f"🎉 <b>Subscription Extended!</b>\n\n"
@@ -628,7 +625,7 @@ async def extend_time_handler(event):
             result_text += f"\n\n⚠️ Could not notify user: {str(e)[:50]}"
     else:
         result_text += "\n\n<i>User not in bot database - notification skipped.</i>"
-        
+
     await status_msg.edit(result_text, parse_mode="html")
 
 
@@ -636,7 +633,7 @@ async def extend_time_handler(event):
 @bot.on(events.NewMessage(pattern=r"^/buypoints$"))
 async def buypoints_handler(event):
     user_id = event.sender_id
-    
+
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=event.chat_id,
@@ -646,10 +643,10 @@ async def buypoints_handler(event):
         ))
     except:
         pass
-        
+
     user_data = users_col.find_one({"user_id": user_id})
     current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     text = (
         f"💰 <b>Buy Points in Bulk</b>\n\n"
         f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
@@ -662,7 +659,7 @@ async def buypoints_handler(event):
         f"<i>1 Point = 1 USDT value</i>\n\n"
         f"Select a package:"
     )
-    
+
     buttons = [
         [
             Button.inline("5 Pts — 5 $", b"bulk_5"),
@@ -677,7 +674,7 @@ async def buypoints_handler(event):
         ],
         [Button.inline("🔙 Main Menu", b"back_to_start")]
     ]
-    
+
     try:
         await event.respond(text, parse_mode="html", buttons=buttons)
     except:
@@ -687,27 +684,27 @@ async def buypoints_handler(event):
 async def bulk_points_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
+
     data_str = event.data.decode()
     package_key = data_str.replace("bulk_", "")
-    
+
     package = BULK_POINTS_PACKAGES.get(package_key)
     if not package:
         return await event.respond("Invalid package. Try again.")
-        
+
     amount = package["amount"]
     points = package["points"]
     label = package["label"]
-    
+
     session = user_sessions.setdefault(user_id, {})
     session["bulk_points"] = points
     session["bulk_amount"] = amount
     session["bulk_label"] = label
     session["product"] = "bulk_points"
-    
+
     user_data = users_col.find_one({"user_id": user_id})
     current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     text = (
         f"💰 <b>Bulk Points Purchase</b>\n\n"
         f"Package: <b>{label}</b>\n"
@@ -717,12 +714,12 @@ async def bulk_points_handler(event):
         f"After Purchase: <b>{current_points + points:.2f} Points</b>\n\n"
         f"Proceed to payment?"
     )
-    
+
     buttons = [
         [Button.inline(f"💳 Pay {amount} USDT", b"bulk_pay_crypto")],
         [Button.inline("🔙 Back to Packages", b"back_buypoints")]
     ]
-    
+
     try:
         await event.edit(text, parse_mode="html", buttons=buttons)
     except:
@@ -733,10 +730,10 @@ async def bulk_points_handler(event):
 async def back_buypoints_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
+
     user_data = users_col.find_one({"user_id": user_id})
     current_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     text = (
         f"💰 <b>Buy Points in Bulk</b>\n\n"
         f"Current Balance: <b>{current_points:.2f} Points</b>\n\n"
@@ -749,7 +746,7 @@ async def back_buypoints_handler(event):
         f"<i>1 Point = 1 USDT value</i>\n\n"
         f"Select a package:"
     )
-    
+
     buttons = [
         [
             Button.inline("5 Pts — 5 $", b"bulk_5"),
@@ -764,7 +761,7 @@ async def back_buypoints_handler(event):
         ],
         [Button.inline("🔙 Main Menu", b"back_to_start")]
     ]
-    
+
     try:
         await event.edit(text, parse_mode="html", buttons=buttons)
     except:
@@ -775,47 +772,47 @@ async def bulk_pay_crypto_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     if not session or "bulk_amount" not in session:
         return await event.respond("Session expired. Please use /buypoints again.")
-        
+
     amount = session["bulk_amount"]
     points = session["bulk_points"]
     label = session["bulk_label"]
-    
+
     await event.edit("🔄 Creating invoice...", parse_mode="html")
-    
+
     try:
         resp = await asyncio.to_thread(create_invoice, amount)
     except Exception as e:
         logger.exception(f"Invoice error: {e}")
         return await event.edit("Failed to create invoice.")
-        
+
     data = resp if isinstance(resp, dict) else {}
     track_id = None
     pay_url = None
-    
+
     if isinstance(data, dict):
         track_id = data.get("track_id") or data.get("trackId") or data.get("trackid")
         pay_url = data.get("payment_url") or data.get("paymentUrl") or data.get("url")
-        
+
         nested = data.get("data") if isinstance(data.get("data"), dict) else None
         if nested:
             track_id = track_id or nested.get("track_id") or nested.get("trackId") or nested.get("trackid")
             pay_url = pay_url or nested.get("payment_url") or nested.get("paymentUrl") or nested.get("url")
-            
+
         if not track_id and isinstance(data.get("data"), list) and len(data.get("data")) > 0:
             el = data.get("data")[0]
             if isinstance(el, dict):
                 track_id = el.get("track_id") or el.get("trackId") or el.get("trackid")
                 pay_url = el.get("payment_url") or el.get("paymentUrl") or el.get("url")
-                
+
     if not track_id or not pay_url:
         logger.error(f"Payment gateway returned unexpected response: {resp}")
         return await event.edit("Payment gateway error.")
-        
+
     session["track_id"] = track_id
-    
+
     text = (
         f"✅ <b>Bulk Points Purchase</b>\n"
         f"Package: <b>{label}</b>\n"
@@ -824,7 +821,7 @@ async def bulk_pay_crypto_handler(event):
         f"Click <b>Pay</b> to open OxaPay.\n"
         f"Payment window: 15 minutes."
     )
-    
+
     buttons = [
         [Button.url("🔗 Pay", pay_url)],
         [
@@ -832,20 +829,20 @@ async def bulk_pay_crypto_handler(event):
             Button.url("📢 Updates", UPDATES_CHANNEL_LINK),
         ],
     ]
-    
+
     try:
         await event.edit(text, parse_mode="html", buttons=buttons)
     except:
         await event.respond(text, parse_mode="html", buttons=buttons)
-        
+
     task = asyncio.create_task(
         wait_for_payment(
-            user_id, 
-            track_id, 
-            label, 
+            user_id,
+            track_id,
+            label,
             0,
-            amount, 
-            is_bulk_points=True, 
+            amount,
+            is_bulk_points=True,
             points_amount=points
         )
     )
@@ -855,7 +852,7 @@ async def bulk_pay_crypto_handler(event):
 @bot.on(events.NewMessage(pattern=r"^/start"))
 async def start_handler(event):
     user_id = event.sender_id
-    
+
     try:
         await bot(functions.messages.SendReactionRequest(
             peer=event.chat_id,
@@ -872,7 +869,7 @@ async def start_handler(event):
         existing = None
 
     first_time = existing is None
-    
+
     args = event.message.message.split()
     referrer_id = None
     if len(args) > 1:
@@ -889,14 +886,14 @@ async def start_handler(event):
             "first_seen": datetime.now(timezone.utc),
             "points": 0.0
         }
-        
+
         if referrer_id:
             ref_user = users_col.find_one({"user_id": referrer_id})
             if ref_user:
                 new_user_doc["referrer_id"] = referrer_id
                 try:
                     await bot.send_message(
-                        referrer_id, 
+                        referrer_id,
                         f"<tg-emoji emoji-id='5208541126583136130'>🎉</tg-emoji> <b>New Referral!</b>\n\n"
                         f"A new user joined via your link.\n"
                         f"You will earn <b>10%</b> in points when they make a purchase.",
@@ -904,7 +901,7 @@ async def start_handler(event):
                     )
                 except Exception as e:
                     logger.error(f"Failed to notify referrer {referrer_id}: {e}")
-                    
+
         users_col.insert_one(new_user_doc)
     else:
         users_col.update_one(
@@ -913,7 +910,7 @@ async def start_handler(event):
         )
 
     caption_text = (
-        "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
+        "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Rebate Chat Bot — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
         "• Chat Farmer (Automated chat farming)\n\n"
         "Select a product to purchase or manage your account."
@@ -937,11 +934,7 @@ async def start_handler(event):
 
     user_sessions.setdefault(user_id, {"expecting_username": False})
 
-    try:
-        await bot.send_file(user_id, START_IMAGE_URL, caption=caption_text, parse_mode="html", buttons=buttons)
-    except Exception as e:
-        logger.error(f"send_file failed: {e}")
-        await event.respond(caption_text, parse_mode="html", buttons=buttons)
+    await event.respond(caption_text, parse_mode="html", buttons=buttons)
 
 @bot.on(events.NewMessage(pattern=r"^/(help|support)$"))
 async def help_handler(event):
@@ -974,20 +967,20 @@ async def show_management_menu(event_or_msg, user_id):
 async def referral_menu_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
+
     user_data = users_col.find_one({"user_id": user_id})
     points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     try:
         ref_count = users_col.count_documents({"referrer_id": user_id})
     except:
         ref_count = 0
-        
+
     global bot_username
-    if not bot_username: 
-        me = await bot.get_me() 
-        globals()['bot_username'] = me.username 
-        
+    if not bot_username:
+        me = await bot.get_me()
+        globals()['bot_username'] = me.username
+
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
 
     text = (
@@ -1000,9 +993,9 @@ async def referral_menu_handler(event):
         f"<code>{ref_link}</code>\n\n"
         "Share this link. You get notified instantly when someone joins."
     )
-    
+
     buttons = [[Button.inline("🔙 Back", b"back_to_start")]]
-    
+
     try:
         await event.edit(text, parse_mode="html", buttons=buttons)
     except:
@@ -1035,20 +1028,17 @@ async def back_start_handler(event):
     ])
 
     caption_text = (
-        "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Kust Bots — Premium Tools</b>\n\n"
+        "<b><tg-emoji emoji-id='5445284980978621387'>🚀</tg-emoji> Rebate Chat Bot — Premium Tools</b>\n\n"
         "<b>Available Products:</b>\n"
         "• Chat Farmer (Automated chat farming)\n\n"
         "Select a product to purchase or manage your account."
     )
-    
+
     try:
-        await event.delete() 
+        await event.delete()
     except:
         pass
-    try:
-        await bot.send_file(user_id, START_IMAGE_URL, caption=caption_text, parse_mode="html", buttons=buttons)
-    except Exception as e:
-        await bot.send_message(user_id, caption_text, parse_mode="html", buttons=buttons)
+    await bot.send_message(user_id, caption_text, parse_mode="html", buttons=buttons)
 
 # --- PRODUCT SELECTION HANDLERS ---
 @bot.on(events.CallbackQuery(data=b"buy_sub"))
@@ -1063,10 +1053,10 @@ async def buy_sub_menu_handler(event):
 async def buy_product_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
+
     product_type = "farmer"
     product_display = "Chat Farmer"
-        
+
     session = user_sessions.setdefault(user_id, {})
     session["expecting_username"] = True
     session["product"] = product_type
@@ -1090,12 +1080,12 @@ async def edit_username_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.setdefault(user_id, {})
-    
+
     session.pop("expecting_username", None)
-    
+
     session["expecting_rename_old"] = True
     session["expecting_rename_new"] = False
-    
+
     text = (
         "<b><tg-emoji emoji-id='5395444784611480792'>✏️</tg-emoji> Edit Username — Step 1</b>\n\n"
         "Please enter the <b>OLD</b> Stake username (the one you want to replace).\n\n"
@@ -1112,7 +1102,7 @@ async def edit_username_handler(event):
 async def terminate_sub_menu_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
+
     user_doc = users_col.find_one({"user_id": user_id})
     if not user_doc or not user_doc.get("username"):
         await event.edit(
@@ -1122,9 +1112,9 @@ async def terminate_sub_menu_handler(event):
         return
 
     username = user_doc.get("username").lstrip("@")
-    
+
     active_details = None
-    
+
     data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
     if data_farmer:
         users = _extract_active_users_list(data_farmer)
@@ -1138,7 +1128,7 @@ async def terminate_sub_menu_handler(event):
     if not active_details:
         session = user_sessions.setdefault(user_id, {})
         session["expecting_term_username"] = True
-        
+
         text = (
             f"User: <code>@{username}</code>\n\n"
             "❌ <b>No active subscription found for this username.</b>\n\n"
@@ -1157,7 +1147,7 @@ async def terminate_sub_menu_handler(event):
     now = datetime.now(timezone.utc)
     if expires_dt.tzinfo is None:
         expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-        
+
     if expires_dt > now:
         remaining_secs = (expires_dt - now).total_seconds()
         remaining_hours = remaining_secs / 3600.0
@@ -1167,7 +1157,7 @@ async def terminate_sub_menu_handler(event):
     refund_amount = 0.0
     if remaining_hours > 0:
         refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
-            
+
     refund_amount = round(refund_amount, 2)
 
     session = user_sessions.setdefault(user_id, {})
@@ -1185,7 +1175,7 @@ async def terminate_sub_menu_handler(event):
         "<i>(Based on remaining time)</i>\n\n"
         "Are you sure? This will instantly stop the bot and remove your username."
     )
-    
+
     buttons = [
         [Button.inline(f"✅ Yes, Refund {refund_amount} Pts", b"terminate_sub_execute")],
         [Button.inline("❌ Cancel", b"manage_subs_menu")]
@@ -1196,9 +1186,9 @@ async def terminate_sub_menu_handler(event):
 async def terminate_force_db_handler(event):
     await event.answer()
     user_id = event.sender_id
-    
+
     users_col.update_one({"user_id": user_id}, {"$unset": {"username": ""}})
-    
+
     await event.edit("✅ Username removed from database.", buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]])
 
 @bot.on(events.CallbackQuery(data=b"terminate_sub_execute"))
@@ -1206,21 +1196,21 @@ async def terminate_execute_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id, {})
-    
+
     username = session.get("term_username")
     api_url = session.get("term_api")
     refund = session.get("term_refund", 0.0)
     product_name = session.get("term_product", "Unknown")
-    
+
     if not username or not api_url:
         await event.edit("Session expired. Please try again.", buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]])
         return
-        
+
     await event.edit("⏳ Terminating subscription on all services...", parse_mode="html")
 
     # ===== CALL PRODUCT APIs TO DELETE USER =====
     all_api_urls = [FARMER_API_URL]
-    
+
     seen_urls = set()
     unique_api_urls = []
     for u in all_api_urls:
@@ -1238,11 +1228,11 @@ async def terminate_execute_handler(event):
     # ===== UPDATE DB: REFUND POINTS AND REMOVE USERNAME =====
     user_doc = users_col.find_one({"user_id": user_id})
     current_db_user = user_doc.get("username", "").lstrip("@") if user_doc else ""
-    
+
     update_query = {"$inc": {"points": refund}}
     if current_db_user.lower() == username.lower().lstrip("@"):
         update_query["$unset"] = {"username": ""}
-        
+
     users_col.update_one({"user_id": user_id}, update_query)
 
     # ===== BUILD RESULT MESSAGE =====
@@ -1259,7 +1249,7 @@ async def terminate_execute_handler(event):
             "❌ Failed to delete user from servers. Please contact support.",
             buttons=[[Button.url("🛠 Support", SUPPORT_CHAT_LINK)]]
         )
-        
+
     session.pop("term_username", None)
     session.pop("term_api", None)
     session.pop("term_refund", None)
@@ -1270,7 +1260,7 @@ async def terminate_execute_handler(event):
 async def text_input_handler(event):
     user_id = event.sender_id
     session = user_sessions.setdefault(user_id, {})
-    
+
     raw_text = event.raw_text.strip()
     if raw_text.startswith("/"):
         return
@@ -1286,9 +1276,9 @@ async def text_input_handler(event):
     if session.get("expecting_term_username"):
         session["expecting_term_username"] = False
         target_username = username_clean
-        
+
         active_details = None
-        
+
         data_farmer = await asyncio.to_thread(get_active_users, FARMER_API_URL)
         if data_farmer:
             users = _extract_active_users_list(data_farmer)
@@ -1298,7 +1288,7 @@ async def text_input_handler(event):
                     if expires:
                         active_details = (FARMER_API_URL, expires, "Chat Farmer")
                         break
-                            
+
         if not active_details:
             await event.respond(
                 f"❌ No active subscription found for <code>@{target_username}</code> either.",
@@ -1312,7 +1302,7 @@ async def text_input_handler(event):
         now = datetime.now(timezone.utc)
         if expires_dt.tzinfo is None:
             expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-            
+
         if expires_dt > now:
             remaining_secs = (expires_dt - now).total_seconds()
             remaining_hours = remaining_secs / 3600.0
@@ -1322,14 +1312,14 @@ async def text_input_handler(event):
         refund_amount = 0.0
         if remaining_hours > 0:
             refund_amount = remaining_hours * REFUND_RATE_FARMER_PER_HOUR
-                
+
         refund_amount = round(refund_amount, 2)
-        
+
         session["term_username"] = target_username
         session["term_api"] = api_url
         session["term_refund"] = refund_amount
         session["term_product"] = product_name
-        
+
         text = (
             f"<b>🗑 Terminate Subscription (Old Username)</b>\n\n"
             f"Product: <b>{product_name}</b>\n"
@@ -1339,7 +1329,7 @@ async def text_input_handler(event):
             "<i>(Based on remaining time)</i>\n\n"
             "Are you sure? This will instantly stop the bot."
         )
-        
+
         buttons = [
             [Button.inline(f"✅ Yes, Refund {refund_amount} Pts", b"terminate_sub_execute")],
             [Button.inline("❌ Cancel", b"manage_subs_menu")]
@@ -1352,7 +1342,7 @@ async def text_input_handler(event):
         session["expecting_rename_old"] = False
         session["expecting_rename_new"] = True
         session["rename_old_value"] = username_clean
-        
+
         await event.respond(
             f"✅ Old Username identified: <code>@{username_clean}</code>\n\n"
             "<b>Step 2:</b> Now send the <b>NEW</b> Stake username.",
@@ -1364,19 +1354,19 @@ async def text_input_handler(event):
     if session.get("expecting_rename_new"):
         old_username = session.get("rename_old_value")
         new_username = username_clean
-        
+
         session["expecting_rename_new"] = False
         session.pop("rename_old_value", None)
-        
-        if not old_username: 
-            await event.respond("❌ Session expired or invalid state. Please try again from the menu.", parse_mode="html") 
+
+        if not old_username:
+            await event.respond("❌ Session expired or invalid state. Please try again from the menu.", parse_mode="html")
             return
 
         await event.respond(f"🔄 Processing change from <code>@{old_username}</code> to <code>@{new_username}</code>...", parse_mode="html")
 
         try:
             resp = await asyncio.to_thread(rename_user_api, old_username, new_username)
-            
+
             if isinstance(resp, dict) and resp.get("ok") is False:
                 await event.respond(f"❌ Rename API reported failure: {resp}\n\nLocal username not changed.", parse_mode="html")
                 return
@@ -1384,24 +1374,24 @@ async def text_input_handler(event):
             try:
                 users_col.update_many({"username": old_username}, {"$set": {"username": new_username}})
                 users_col.update_many(
-                    {"username": old_username}, 
+                    {"username": old_username},
                     {"$set": {"username.$": new_username}}
                 )
                 session["username"] = new_username
-                
+
             except Exception as e:
                 logger.exception("Failed to update DB entries after rename API success.")
-            
+
             await event.respond(
                 f"✅ Success! Username changed from <code>@{old_username}</code> to <code>@{new_username}</code>.",
                 parse_mode="html",
                 buttons=[[Button.inline("🔙 Manage Menu", b"manage_subs_menu")]]
             )
-            
+
         except Exception as e:
             logger.exception("Rename process failed.")
             await event.respond(f"❌ Error during rename: {e}", parse_mode="html")
-            
+
         return
 
     # --- STANDARD PURCHASE FLOW ---
@@ -1410,7 +1400,7 @@ async def text_input_handler(event):
 
     session["pending_username"] = username_clean
     session["expecting_username"] = False
-    
+
     prod_name = "Chat Farmer"
 
     text = (
@@ -1494,7 +1484,7 @@ async def buy_upi_handler(event):
     text = (
         "<tg-emoji emoji-id='6325705628291436771'>💵</tg-emoji> <b>Buy with UPI</b>\n\n"
         "DM admin and mention your Stake username:\n"
-        f"👉 <a href=\"{UPI_DM_LINK}\">@KustXoffical</a>"
+        f"👉 <a href=\"{UPI_DM_LINK}\">@Rabit0505</a>"
     )
     buttons = [[Button.url("DM for UPI Payment", UPI_DM_LINK)]]
     try:
@@ -1518,9 +1508,9 @@ async def buy_crypto_handler(event):
         "💳 <b>Select a Plan</b>\n\n"
         "Plans:\n"
     )
-    
+
     buttons = []
-    
+
     p3h = PLANS_FARMER_SHORT["3h"]
     p6h = PLANS_FARMER_SHORT["6h"]
     p12h = PLANS_FARMER_SHORT["12h"]
@@ -1569,21 +1559,21 @@ async def plan_handler(event):
         return await event.respond("Restart with /start and send your username first.")
 
     plan_key_raw = event.data.decode().split("_", 1)[1]
-    
+
     if plan_key_raw == "1d":
         plan = PLAN_1D_FARMER
         amount = plan["amount"]
         label = plan["label"]
         hours = plan["hours"]
         plan_key = "1d"
-        
+
     elif plan_key_raw in PLANS_FARMER_SHORT:
         plan = PLANS_FARMER_SHORT[plan_key_raw]
         amount = plan["amount"]
         label = plan["label"]
         hours = plan["hours"]
         plan_key = plan_key_raw
-        
+
     else:
         plan = PLANS_LONG_TERM.get(plan_key_raw)
         if not plan:
@@ -1600,7 +1590,7 @@ async def plan_handler(event):
 
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     prod_name = "Chat Farmer"
 
     text = (
@@ -1611,13 +1601,13 @@ async def plan_handler(event):
         f"💰 Your Points: <b>{user_points:.2f}</b>\n\n"
         "Select payment method:"
     )
-    
+
     buttons = [
         [Button.inline(f"Pay with Crypto ({amount} USDT)", b"pay_method_crypto")],
         [Button.inline(f"Pay with Points ({amount} Pts)", b"pay_method_points")],
         [Button.inline("🔙 Back", b"buy_crypto")]
     ]
-    
+
     try:
         await event.edit(text, parse_mode="html", buttons=buttons)
     except:
@@ -1628,32 +1618,32 @@ async def pay_points_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     if not session or "selected_amount" not in session:
         return await event.respond("Session expired. Please restart.")
-        
+
     amount = session["selected_amount"]
     label = session["selected_label"]
     hours = session["selected_hours"]
     username_clean = session["username"]
-    
+
     api_url = FARMER_API_URL
     prod_name = "Chat Farmer"
     forwards = [FARMER_FORWARD_1, FARMER_FORWARD_2, FARMER_FORWARD_3]
-        
+
     user_data = users_col.find_one({"user_id": user_id})
     user_points = user_data.get("points", 0.0) if user_data else 0.0
-    
+
     if user_points < amount:
         await event.answer(f"❌ Insufficient Points! You need {amount} points.", alert=True)
         return
-        
+
     users_col.update_one({"user_id": user_id}, {"$inc": {"points": -amount}})
-    
+
     await event.edit(f"🔄 Activating {prod_name} subscription...", parse_mode="html")
-    
+
     activation_ok = await asyncio.to_thread(activate_subscription, f"@{username_clean}", hours, api_url)
-    
+
     if activation_ok:
         # FORWARD + PIN
         for chat, msg_id in forwards:
@@ -1661,13 +1651,13 @@ async def pay_points_handler(event):
                 try:
                     source_entity = await bot.get_entity(chat)
                 except:
-                    source_entity = chat 
+                    source_entity = chat
                 fwd = await bot.forward_messages(entity=user_id, messages=msg_id, from_peer=source_entity)
                 if isinstance(fwd, list): fwd = fwd[0]
                 try: await bot.pin_message(user_id, fwd.id, notify=True)
                 except: pass
             except: pass
-            
+
         await event.edit(
             f"✅ <b>Paid with Points!</b>\n\n"
             f"Your <b>{prod_name} - {label}</b> subscription is activated.\n"
@@ -1686,14 +1676,14 @@ async def pay_crypto_inv_handler(event):
     await event.answer()
     user_id = event.sender_id
     session = user_sessions.get(user_id)
-    
+
     if not session or "selected_amount" not in session:
         return await event.respond("Session expired.")
-        
+
     amount = session["selected_amount"]
     label = session["selected_label"]
     hours = session["selected_hours"]
-    
+
     prod_name = "Chat Farmer"
 
     if user_id in user_tasks:
@@ -1731,7 +1721,7 @@ async def pay_crypto_inv_handler(event):
         return await event.edit("Payment gateway error.")
 
     session["track_id"] = track_id
-    
+
     text = (
         f"✅ Product: <b>{prod_name}</b>\n"
         f"✅ Plan: <b>{label}</b>\n"
@@ -1789,7 +1779,7 @@ async def broadcast_handler(event):
 
 # ================== MAIN ==================
 def main():
-    logger.info("Stake Payment Bot (Chat Farmer) is running...")
+    logger.info("Rebate Chat Bot (Chat Farmer) is running...")
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(check_active_users_loop())
