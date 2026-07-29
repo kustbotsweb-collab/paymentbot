@@ -47,19 +47,19 @@ REMINDER_THRESHOLD_MINUTES = 10   # notify when <= 10 minutes remain
 # --- PRICING PLANS (50% OFF) ---
 # Plans (Shared pricing for 2d+)
 PLANS_LONG_TERM = {
-    "2d":  {"label": "2 Days",      "amount": 2.25,  "hours": 48},
-    "4d":  {"label": "4 Days",      "amount": 4.0,   "hours": 96},
-    "7d":  {"label": "7 Days",      "amount": 4.75,  "hours": 168},
+    "2d":  {"label": "2 Days",      "amount": 8,  "hours": 48},
+    "4d":  {"label": "4 Days",      "amount": 20,   "hours": 96},
+    "7d":  {"label": "7 Days",      "amount": 25,  "hours": 168},
 }
 
 # 1 Day definitions
-PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 1.0, "hours": 24}
+PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 4, "hours": 24}
 
 # Plans (Exclusive to Chat Farmer Short Term)
 PLANS_FARMER_SHORT = {
-    "3h":  {"label": "3 Hours",     "amount": 0.25,  "hours": 3},
-    "6h":  {"label": "6 Hours",     "amount": 0.45,  "hours": 6},
-    "12h": {"label": "12 Hours",    "amount": 0.75,  "hours": 12},
+    "3h":  {"label": "3 Hours",     "amount": 1,  "hours": 3},
+    "6h":  {"label": "6 Hours",     "amount": 2,  "hours": 6},
+    "12h": {"label": "12 Hours",    "amount": 3,  "hours": 12},
 }
 
 # --- BULK POINTS PACKAGES ---
