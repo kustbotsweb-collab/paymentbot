@@ -31,7 +31,7 @@ db = mongo["kustchatbot"]
 users_col = db["users"]
 
 # Bot owner
-BOT_OWNER_ID = 7618467489
+BOT_OWNER_ID = 6759363221
 
 # OxaPay API
 OXAPAY_API_KEY = "EZJYLC-3A6TFB-RFFXOR-WTTDY3"
