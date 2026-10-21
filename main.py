@@ -53,13 +53,13 @@ PLANS_LONG_TERM = {
 }
 
 # 1 Day definitions
-PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 4, "hours": 24}
+PLAN_1D_FARMER  = {"label": "1 Day",    "amount": 3, "hours": 24}
 
 # Plans (Exclusive to Chat Farmer Short Term)
 PLANS_FARMER_SHORT = {
-    "3h":  {"label": "3 Hours",     "amount": 1,  "hours": 3},
-    "6h":  {"label": "6 Hours",     "amount": 2,  "hours": 6},
-    "12h": {"label": "12 Hours",    "amount": 3,  "hours": 12},
+    "3h":  {"label": "3 Hours",     "amount": 0.75,  "hours": 3},
+    "6h":  {"label": "6 Hours",     "amount": 1.5,  "hours": 6},
+    "12h": {"label": "12 Hours",    "amount": 2.5,  "hours": 12},
 }
 
 # --- BULK POINTS PACKAGES ---
